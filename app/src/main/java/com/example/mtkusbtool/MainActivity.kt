@@ -83,11 +83,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun doHandshakeFast(device: UsbDevice) {
-        tvStatus.text = "מבצע לחיצת יד..."
+        tvStatus.text = "מבצע לחיצת יד וקורא Chip ID..."
         btnHandshake.isEnabled = false
 
         Thread {
-            val resultMessage = MtkBromConnection.performHandshake(usbManager, device)
+            val resultMessage = MtkBromConnection.performHandshakeAndReadChipId(usbManager, device)
             runOnUiThread {
                 tvStatus.text = resultMessage
                 btnHandshake.isEnabled = true
