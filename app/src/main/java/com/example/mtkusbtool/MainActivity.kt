@@ -8,7 +8,6 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Bundle
-import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -37,7 +36,6 @@ class MainActivity : AppCompatActivity() {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     
                     if (granted && device != null) {
-                        tvStatus.text = getString(R.string.status_permission_granted)
                         doHandshakeFast(device)
                     } else {
                         tvStatus.text = "הרשאה נדחתה."
@@ -62,12 +60,13 @@ class MainActivity : AppCompatActivity() {
         }
         registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
 
-        // כפתור ידני למקרה שהמכשיר היה מחובר לפני פתיחת האפליקציה
         btnHandshake.setOnClickListener { 
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 if (usbManager.hasPermission(device)) doHandshakeFast(device)
                 else requestPermissionFast(device)
+            } else {
+                tvStatus.text = "לא נמצא מכשיר MediaTek."
             }
         }
     }
@@ -79,7 +78,6 @@ class MainActivity : AppCompatActivity() {
         }
         tvStatus.text = "מבקש הרשאה..."
         val intent = Intent(ACTION_USB_PERMISSION)
-        // שים לב: אנחנו חייבים להשתמש ב-FLAG_MUTABLE כדי שאנדרואיד תדע למי לשלוח את התשובה
         val pi = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_MUTABLE)
         usbManager.requestPermission(device, pi)
     }
@@ -89,10 +87,9 @@ class MainActivity : AppCompatActivity() {
         btnHandshake.isEnabled = false
 
         Thread {
-            val success = MtkBromConnection.performHandshake(usbManager, device)
+            val resultMessage = MtkBromConnection.performHandshake(usbManager, device)
             runOnUiThread {
-                tvStatus.text = if (success) getString(R.string.status_handshake_success) 
-                                else getString(R.string.status_handshake_failed)
+                tvStatus.text = resultMessage
                 btnHandshake.isEnabled = true
             }
         }.start()
