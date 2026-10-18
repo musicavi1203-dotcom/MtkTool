@@ -4,15 +4,16 @@ import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
+import java.util.Locale
 
 object MtkBromConnection {
-    fun performHandshake(usbManager: UsbManager, device: UsbDevice): Boolean {
-        val connection = usbManager.openDevice(device) ?: return false
+    fun performHandshake(usbManager: UsbManager, device: UsbDevice): String {
+        val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת החיבור ל-USB נכשלה."
         val usbInterface = device.getInterface(0)
         
         if (!connection.claimInterface(usbInterface, true)) {
             connection.close()
-            return false
+            return "שגיאה: תפיסת ה-Interface נכשלה."
         }
 
         var epIn: UsbEndpoint? = null
@@ -27,7 +28,7 @@ object MtkBromConnection {
 
         if (epIn == null || epOut == null) {
             connection.close()
-            return false
+            return "שגיאה: לא נמצאו נקודות קצה (Endpoints) תקינות."
         }
 
         // 0xA0 ל-BROM, 0xA1 ל-Preloader
@@ -38,12 +39,22 @@ object MtkBromConnection {
         val sent = connection.bulkTransfer(epOut, cmd, 1, 2000)
         if (sent < 0) {
             connection.close()
-            return false
+            return "שגיאה: שליחת פקודת לחיצת היד נכשלה (Timeout בשליחה)."
         }
 
         val received = connection.bulkTransfer(epIn, resp, 1, 2000)
         connection.close()
 
-        return received > 0 && (resp[0] == 0x5F.toByte() || resp[0] == 0xC0.toByte())
+        if (received <= 0) {
+            return "שגיאה: לא התקבלה תגובה מהמכשיר (Timeout בקריאה). המכשיר אולי נותק."
+        }
+
+        val responseHex = String.format(Locale.US, "0x%02X", resp[0])
+        
+        return if (resp[0] == 0x5F.toByte() || resp[0] == 0xC0.toByte()) {
+            "לחיצת יד הצליחה! ✓ (תגובה: $responseHex)"
+        } else {
+            "כשל: התקבלה תגובה לא תקינה ($responseHex). המכשיר כנראה במצב טעינה."
+        }
     }
 }
