@@ -28,15 +28,14 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    tvStatus.text = getString(R.string.status_waiting)
+                    tvStatus.text = "המכשיר נותק."
                     btnHandshake.isEnabled = false
                 }
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    
                     if (granted && device != null) {
-                        doHandshakeFast(device)
+                        executeDaFlow(device)
                     } else {
                         tvStatus.text = "הרשאה נדחתה."
                     }
@@ -63,7 +62,7 @@ class MainActivity : AppCompatActivity() {
         btnHandshake.setOnClickListener { 
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
-                if (usbManager.hasPermission(device)) doHandshakeFast(device)
+                if (usbManager.hasPermission(device)) executeDaFlow(device)
                 else requestPermissionFast(device)
             } else {
                 tvStatus.text = "לא נמצא מכשיר MediaTek."
@@ -73,7 +72,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermissionFast(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
-            doHandshakeFast(device)
+            executeDaFlow(device)
             return
         }
         tvStatus.text = "מבקש הרשאה..."
@@ -82,12 +81,16 @@ class MainActivity : AppCompatActivity() {
         usbManager.requestPermission(device, pi)
     }
 
-    private fun doHandshakeFast(device: UsbDevice) {
-        tvStatus.text = "מבצע לחיצת יד וקורא Chip ID..."
+    private fun executeDaFlow(device: UsbDevice) {
+        tvStatus.text = "מתחיל תהליך..."
         btnHandshake.isEnabled = false
 
         Thread {
-            val resultMessage = MtkBromConnection.performHandshakeAndReadChipId(usbManager, device)
+            val resultMessage = MtkBromConnection.sendDaFile(applicationContext, usbManager, device) { progressMsg ->
+                runOnUiThread {
+                    tvStatus.text = progressMsg
+                }
+            }
             runOnUiThread {
                 tvStatus.text = resultMessage
                 btnHandshake.isEnabled = true
