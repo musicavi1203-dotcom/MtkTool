@@ -54,7 +54,9 @@ object MtkBromConnection {
             val received = connection.bulkTransfer(epIn, resp, 1, 2000)
             if (received <= 0) return "שגיאה: אין תגובה בשלב $stepName."
             val hex = String.format(Locale.US, "0x%02X", resp[0])
-            if (resp[0] == 0x5A.toByte() || resp[0] == 0x5F.toByte() || resp[0] == 0xC0.toByte()) {
+            
+            // הוספנו את 0xD8 לתגובות החוקיות (המכשיר אומר שהוא מוכן)
+            if (resp[0] == 0xD8.toByte() || resp[0] == 0x5A.toByte() || resp[0] == 0x5F.toByte() || resp[0] == 0xC0.toByte()) {
                 return null // Success
             }
             return "שגיאה: תגובה לא תקינה בשלב $stepName ($hex)."
@@ -104,7 +106,6 @@ object MtkBromConnection {
             val progress = (offset * 100) / daBytes.size
             onProgress("שולח DA... $progress%")
             
-            // השהיה קטנה כדי לא להציף את ה-USB
             try { Thread.sleep(5) } catch (e: InterruptedException) {}
         }
 
