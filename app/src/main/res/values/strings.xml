@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">MtkUsbTool</string>
+    <string name="status_waiting">ממתין לחיבור מכשיר…</string>
+    <string name="btn_request_permission">בקש הרשאת USB</string>
+    <string name="btn_handshake">בצע לחיצת יד (Handshake)</string>
+    <string name="status_permission_granted">הרשאה אושרה! אפשר לבצע לחיצת יד.</string>
+    <string name="status_handshake_success">לחיצת יד הצליחה! ✓</string>
+    <string name="status_handshake_failed">לחיצת יד נכשלה ❌</string>
+</resources>
