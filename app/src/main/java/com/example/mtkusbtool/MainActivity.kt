@@ -5,8 +5,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Bundle
+import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -21,18 +23,23 @@ class MainActivity : AppCompatActivity() {
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                ACTION_USB_PERMISSION -> {
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    if (granted) {
-                        tvStatus.text = getString(R.string.status_permission_granted)
-                        btnHandshake.isEnabled = true
-                    } else {
-                        tvStatus.text = "הרשאה נדחתה."
-                    }
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                    // מכשיר התחבר! מפעילים את כל התהליך
+                    checkForDeviceAndRequestPermission()
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     tvStatus.text = getString(R.string.status_waiting)
                     btnHandshake.isEnabled = false
+                }
+                ACTION_USB_PERMISSION -> {
+                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    if (granted) {
+                        tvStatus.text = getString(R.string.status_permission_granted)
+                        // הרשאה אושרה - מיד עושים Handshake!
+                        doHandshakeAutomatically() 
+                    } else {
+                        tvStatus.text = "הרשאה נדחתה."
+                    }
                 }
             }
         }
@@ -47,41 +54,53 @@ class MainActivity : AppCompatActivity() {
         btnRequestPermission = findViewById(R.id.btnRequestPermission)
         btnHandshake = findViewById(R.id.btnHandshake)
 
-        val filter = IntentFilter(ACTION_USB_PERMISSION)
+        // הסתרנו את כפתור ההרשאה כי התהליך אוטומטי
+        btnRequestPermission.visibility = View.GONE 
+
+        val filter = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            addAction(ACTION_USB_PERMISSION)
+        }
         registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
 
-        btnRequestPermission.setOnClickListener { requestPermission() }
-        btnHandshake.setOnClickListener { doHandshake() }
+        // כפתור ידני רק למקרה שהמכשיר מחובר והתפספס
+        btnHandshake.setOnClickListener { checkForDeviceAndRequestPermission() }
+
+        // בדיקה ראשונית אם המכשיר כבר מחובר כשהאפליקציה נפתחה
+        checkForDeviceAndRequestPermission()
     }
 
-    private fun requestPermission() {
+    private fun checkForDeviceAndRequestPermission() {
         val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
         if (device == null) {
-            tvStatus.text = "לא נמצא מכשיר MediaTek."
+            tvStatus.text = "ממתין לחיבור מכשיר MediaTek..."
             return
         }
+
         if (usbManager.hasPermission(device)) {
-            tvStatus.text = getString(R.string.status_permission_granted)
-            btnHandshake.isEnabled = true
+            // אם כבר יש הרשאה, פשוט עושים Handshake
+            doHandshakeAutomatically()
         } else {
+            tvStatus.text = "מכשיר זוהה, מבקש הרשאה..."
             val intent = Intent(ACTION_USB_PERMISSION)
             val pi = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
             usbManager.requestPermission(device, pi)
         }
     }
 
-    private fun doHandshake() {
+    private fun doHandshakeAutomatically() {
         val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D } ?: return
-        tvStatus.text = "מבצע לחיצת יד..."
+        
+        tvStatus.text = "מבצע לחיצת יד אוטומטית..."
         btnHandshake.isEnabled = false
 
-        // שימוש ב-Thread כדי לא לתקוע את ה-UI
         Thread {
             val success = MtkBromConnection.performHandshake(usbManager, device)
             runOnUiThread {
                 tvStatus.text = if (success) getString(R.string.status_handshake_success) 
                                 else getString(R.string.status_handshake_failed)
-                btnHandshake.isEnabled = true
+                btnHandshake.isEnabled = true // מאפשר לנסות שוב ידנית אם נכשל
             }
         }.start()
     }
