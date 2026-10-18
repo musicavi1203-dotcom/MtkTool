@@ -7,14 +7,14 @@ import android.hardware.usb.UsbManager
 import java.util.Locale
 
 object MtkBromConnection {
-    fun performHandshake(usbManager: UsbManager, device: UsbDevice): String {
+    fun performHandshakeAndReadChipId(usbManager: UsbManager, device: UsbDevice): String {
         val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת החיבור ל-USB נכשלה."
         
         var epIn: UsbEndpoint? = null
         var epOut: UsbEndpoint? = null
         var claimedInterface = false
 
-        // עוברים על כל ה-Interfaces של המכשיר כדי למצוא את ה-Endpoints
+        // מציאת ה-Interfaces וה-Endpoints
         for (i in 0 until device.interfaceCount) {
             val usbInterface = device.getInterface(i)
             if (connection.claimInterface(usbInterface, true)) {
@@ -29,7 +29,6 @@ object MtkBromConnection {
                     }
                 }
                 
-                // אם מצאנו את שניהם ב-Interface הזה, נשמור אותם ונצא מהלולאה
                 if (foundIn != null && foundOut != null) {
                     epIn = foundIn
                     epOut = foundOut
@@ -41,10 +40,10 @@ object MtkBromConnection {
 
         if (!claimedInterface || epIn == null || epOut == null) {
             connection.close()
-            return "שגיאה: לא נמצאו נקודות קצה (Endpoints) מתאימות באף Interface."
+            return "שגיאה: לא נמצאו נקודות קצה (Endpoints)."
         }
 
-        // 0xA0 ל-BROM, 0xA1 ל-Preloader
+        // 1. שלב הלחיצת יד
         val isBrom = device.productId == 0x0003 || device.productId == 0x0001
         val cmd = byteArrayOf(if (isBrom) 0xA0.toByte() else 0xA1.toByte())
         val resp = ByteArray(1)
@@ -52,22 +51,34 @@ object MtkBromConnection {
         val sent = connection.bulkTransfer(epOut, cmd, 1, 2000)
         if (sent < 0) {
             connection.close()
-            return "שגיאה: שליחת פקודת לחיצת היד נכשלה (Timeout בשליחה)."
+            return "שגיאה: שליחת לחיצת יד נכשלה."
         }
 
         val received = connection.bulkTransfer(epIn, resp, 1, 2000)
-        connection.close()
-
-        if (received <= 0) {
-            return "שגיאה: לא התקבלה תגובה מהמכשיר (Timeout בקריאה). המכשיר אולי ניתק."
+        if (received <= 0 || (resp[0] != 0x5F.toByte() && resp[0] != 0xC0.toByte())) {
+            val responseHex = if (received > 0) String.format(Locale.US, "0x%02X", resp[0]) else "אין תגובה"
+            connection.close()
+            return "כשל בלחיצת יד: תגובה $responseHex."
         }
 
-        val responseHex = String.format(Locale.US, "0x%02X", resp[0])
+        // 2. שלב קריאת Chip ID (פקודה 0xD8)
+        val readIdCmd = byteArrayOf(0xD8.toByte())
+        val chipIdBuffer = ByteArray(4)
         
-        return if (resp[0] == 0x5F.toByte() || resp[0] == 0xC0.toByte()) {
-            "לחיצת יד הצליחה! ✓ (תגובה: $responseHex)"
+        val idSent = connection.bulkTransfer(epOut, readIdCmd, 1, 2000)
+        if (idSent < 0) {
+            connection.close()
+            return "לחיצת יד הצליחה, אבל שליחת פקודת Chip ID נכשלה."
+        }
+
+        val idReceived = connection.bulkTransfer(epIn, chipIdBuffer, 4, 2000)
+        connection.close() // סוגרים רק אחרי הכל
+
+        return if (idReceived > 0) {
+            val chipIdHex = chipIdBuffer.joinToString("") { String.format(Locale.US, "%02X", it) }
+            "הצלחה! Chip ID: $chipIdHex"
         } else {
-            "כשל: התקבלה תגובה לא תקינה ($responseHex). המכשיר כנראה במצב טעינה."
+            "לחיצת יד הצליחה, אבל לא התקבל Chip ID (המכשיר אולי מוגן או במצב לא נכון)."
         }
     }
 }
