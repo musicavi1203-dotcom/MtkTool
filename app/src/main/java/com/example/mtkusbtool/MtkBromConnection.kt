@@ -1,11 +1,9 @@
 package com.example.mtkusbtool
 
-import android.content.Context
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
-import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
@@ -13,9 +11,9 @@ import java.util.Locale
 object MtkBromConnection {
     
     fun sendDaFile(
-        context: Context, 
         usbManager: UsbManager, 
         device: UsbDevice,
+        daBytes: ByteArray,
         onProgress: (String) -> Unit
     ): String {
         val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת החיבור ל-USB נכשלה."
@@ -50,52 +48,45 @@ object MtkBromConnection {
             return "שגיאה: לא נמצאו נקודות קצה."
         }
 
-        // 1. קריאת קובץ ה-DA מה-Assets
-        onProgress("קורא קובץ DA...")
-        val daBytes: ByteArray
-        try {
-            val inputStream: InputStream = context.assets.open("MTK_AllInOne_DA.bin")
-            daBytes = inputStream.readBytes()
-            inputStream.close()
-        } catch (e: Exception) {
-            connection.close()
-            return "שגיאה: לא ניתן לקרוא את הקובץ MTK_AllInOne_DA.bin"
+        val resp = ByteArray(1)
+        
+        fun readAck(stepName: String): String? {
+            val received = connection.bulkTransfer(epIn, resp, 1, 2000)
+            if (received <= 0) return "שגיאה: אין תגובה בשלב $stepName."
+            val hex = String.format(Locale.US, "0x%02X", resp[0])
+            if (resp[0] == 0x5A.toByte() || resp[0] == 0x5F.toByte() || resp[0] == 0xC0.toByte()) {
+                return null // Success
+            }
+            return "שגיאה: תגובה לא תקינה בשלב $stepName ($hex)."
         }
 
-        // 2. לחיצת יד
+        // 1. לחיצת יד
         onProgress("מבצע לחיצת יד...")
         val isBrom = device.productId == 0x0003 || device.productId == 0x0001
         val handshakeCmd = byteArrayOf(if (isBrom) 0xA0.toByte() else 0xA1.toByte())
-        val resp = ByteArray(1)
 
         if (connection.bulkTransfer(epOut, handshakeCmd, 1, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת לחיצת יד נכשלה."
         }
-        if (connection.bulkTransfer(epIn, resp, 1, 2000) <= 0 || (resp[0] != 0x5F.toByte() && resp[0] != 0xC0.toByte())) {
-            connection.close(); return "שגיאה: לחיצת יד נכשלה."
-        }
+        readAck("לחיצת יד")?.let { connection.close(); return it }
 
-        // 3. שליחת פקודת Send DA (0xD7)
+        // 2. פקודת Send DA (0xD7)
         onProgress("מכין לשליחת DA...")
         if (connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת פקודת 0xD7 נכשלה."
         }
-        if (connection.bulkTransfer(epIn, resp, 1, 2000) <= 0) {
-            connection.close(); return "שגיאה: אין תגובה לפקודת 0xD7."
-        }
+        readAck("פקודת 0xD7")?.let { connection.close(); return it }
 
-        // 4. שליחת גודל הקובץ
+        // 3. שליחת גודל הקובץ
         val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
         if (connection.bulkTransfer(epOut, sizeBytes, 4, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת גודל הקובץ נכשלה."
         }
-        if (connection.bulkTransfer(epIn, resp, 1, 2000) <= 0) {
-            connection.close(); return "שגיאה: אין תגובה לגודל הקובץ."
-        }
+        readAck("גודל הקובץ")?.let { connection.close(); return it }
 
-        // 5. שליחת הנתונים בצ'אנקים
+        // 4. שליחת הנתונים
         var offset = 0
-        val chunkSize = 4096
+        val chunkSize = 512
         while (offset < daBytes.size) {
             val length = minOf(chunkSize, daBytes.size - offset)
             val chunk = daBytes.copyOfRange(offset, offset + length)
@@ -103,28 +94,33 @@ object MtkBromConnection {
             if (connection.bulkTransfer(epOut, chunk, length, 2000) < 0) {
                 connection.close(); return "שגיאה: שליחת נתונים נכשלה במיקום $offset."
             }
-            if (connection.bulkTransfer(epIn, resp, 1, 2000) <= 0) {
-                connection.close(); return "שגיאה: אין ACK במיקום $offset."
+            
+            val ackError = readAck("נתונים ב-$offset")
+            if (ackError != null) {
+                connection.close(); return ackError
             }
             
             offset += length
             val progress = (offset * 100) / daBytes.size
             onProgress("שולח DA... $progress%")
+            
+            // השהיה קטנה כדי לא להציף את ה-USB
+            try { Thread.sleep(5) } catch (e: InterruptedException) {}
         }
 
-        // 6. פקודת הרצה (Jump to DA - 0xD5)
+        // 5. פקודת הרצה (Jump to DA - 0xD5)
         onProgress("מריץ את ה-DA...")
         if (connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת פקודת הרצה נכשלה."
         }
-        val jumpResp = connection.bulkTransfer(epIn, resp, 1, 2000)
         
+        val jumpResult = readAck("פקודת הרצה")
         connection.close()
 
-        return if (jumpResp > 0) {
-            "הצלחה! ה-DA נשלח והורץ (תגובה: ${String.format(Locale.US, "0x%02X", resp[0])}). המכשיר אמור להישאר מחובר."
+        return if (jumpResult == null) {
+            "הצלחה! ה-DA נשלח והורץ. המכשיר בשליטתנו!"
         } else {
-            "ה-DA נשלח, אבל לא התקבלה תגובה לפקודת ההרצה."
+            "ה-DA נשלח אבל ההרצה נכשלה: $jumpResult"
         }
     }
 }
