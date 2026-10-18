@@ -50,19 +50,19 @@ object MtkBromConnection {
 
         val resp = ByteArray(1)
         
-        fun readAck(stepName: String): String? {
+        // פונקציית עזר לבדיקת תגובות
+        fun readExpectedAck(stepName: String, expected: List<Byte>): String? {
             val received = connection.bulkTransfer(epIn, resp, 1, 2000)
             if (received <= 0) return "שגיאה: אין תגובה בשלב $stepName."
             val hex = String.format(Locale.US, "0x%02X", resp[0])
             
-            // הוספנו את 0xD8 לתגובות החוקיות (המכשיר אומר שהוא מוכן)
-            if (resp[0] == 0xD8.toByte() || resp[0] == 0x5A.toByte() || resp[0] == 0x5F.toByte() || resp[0] == 0xC0.toByte()) {
+            if (expected.contains(resp[0])) {
                 return null // Success
             }
             return "שגיאה: תגובה לא תקינה בשלב $stepName ($hex)."
         }
 
-        // 1. לחיצת יד
+        // 1. לחיצת יד (מצפה ל-0x5F או 0xC0)
         onProgress("מבצע לחיצת יד...")
         val isBrom = device.productId == 0x0003 || device.productId == 0x0001
         val handshakeCmd = byteArrayOf(if (isBrom) 0xA0.toByte() else 0xA1.toByte())
@@ -70,23 +70,23 @@ object MtkBromConnection {
         if (connection.bulkTransfer(epOut, handshakeCmd, 1, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת לחיצת יד נכשלה."
         }
-        readAck("לחיצת יד")?.let { connection.close(); return it }
+        readExpectedAck("לחיצת יד", listOf(0x5F.toByte(), 0xC0.toByte()))?.let { connection.close(); return it }
 
-        // 2. פקודת Send DA (0xD7)
+        // 2. פקודת Send DA (0xD7) - מצפה ל-0xD8
         onProgress("מכין לשליחת DA...")
         if (connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת פקודת 0xD7 נכשלה."
         }
-        readAck("פקודת 0xD7")?.let { connection.close(); return it }
+        readExpectedAck("פקודת 0xD7", listOf(0xD8.toByte()))?.let { connection.close(); return it }
 
-        // 3. שליחת גודל הקובץ
+        // 3. שליחת גודל הקובץ - מצפה ל-0xD9
         val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
         if (connection.bulkTransfer(epOut, sizeBytes, 4, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת גודל הקובץ נכשלה."
         }
-        readAck("גודל הקובץ")?.let { connection.close(); return it }
+        readExpectedAck("גודל הקובץ", listOf(0xD9.toByte()))?.let { connection.close(); return it }
 
-        // 4. שליחת הנתונים
+        // 4. שליחת הנתונים - מצפה ל-0x5A (או 0x5F)
         var offset = 0
         val chunkSize = 512
         while (offset < daBytes.size) {
@@ -97,7 +97,7 @@ object MtkBromConnection {
                 connection.close(); return "שגיאה: שליחת נתונים נכשלה במיקום $offset."
             }
             
-            val ackError = readAck("נתונים ב-$offset")
+            val ackError = readExpectedAck("נתונים ב-$offset", listOf(0x5A.toByte(), 0x5F.toByte()))
             if (ackError != null) {
                 connection.close(); return ackError
             }
@@ -109,13 +109,13 @@ object MtkBromConnection {
             try { Thread.sleep(5) } catch (e: InterruptedException) {}
         }
 
-        // 5. פקודת הרצה (Jump to DA - 0xD5)
+        // 5. פקודת הרצה (0xD5) - מצפה ל-0x5A או 0x5F
         onProgress("מריץ את ה-DA...")
         if (connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת פקודת הרצה נכשלה."
         }
         
-        val jumpResult = readAck("פקודת הרצה")
+        val jumpResult = readExpectedAck("פקודת הרצה", listOf(0x5A.toByte(), 0x5F.toByte()))
         connection.close()
 
         return if (jumpResult == null) {
