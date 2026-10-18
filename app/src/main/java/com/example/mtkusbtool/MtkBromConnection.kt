@@ -9,26 +9,39 @@ import java.util.Locale
 object MtkBromConnection {
     fun performHandshake(usbManager: UsbManager, device: UsbDevice): String {
         val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת החיבור ל-USB נכשלה."
-        val usbInterface = device.getInterface(0)
         
-        if (!connection.claimInterface(usbInterface, true)) {
-            connection.close()
-            return "שגיאה: תפיסת ה-Interface נכשלה."
-        }
-
         var epIn: UsbEndpoint? = null
         var epOut: UsbEndpoint? = null
-        for (i in 0 until usbInterface.endpointCount) {
-            val ep = usbInterface.getEndpoint(i)
-            if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
-                if (ep.direction == UsbConstants.USB_DIR_IN) epIn = ep
-                else if (ep.direction == UsbConstants.USB_DIR_OUT) epOut = ep
+        var claimedInterface = false
+
+        // עוברים על כל ה-Interfaces של המכשיר כדי למצוא את ה-Endpoints
+        for (i in 0 until device.interfaceCount) {
+            val usbInterface = device.getInterface(i)
+            if (connection.claimInterface(usbInterface, true)) {
+                var foundIn: UsbEndpoint? = null
+                var foundOut: UsbEndpoint? = null
+                
+                for (j in 0 until usbInterface.endpointCount) {
+                    val ep = usbInterface.getEndpoint(j)
+                    if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
+                        if (ep.direction == UsbConstants.USB_DIR_IN) foundIn = ep
+                        else if (ep.direction == UsbConstants.USB_DIR_OUT) foundOut = ep
+                    }
+                }
+                
+                // אם מצאנו את שניהם ב-Interface הזה, נשמור אותם ונצא מהלולאה
+                if (foundIn != null && foundOut != null) {
+                    epIn = foundIn
+                    epOut = foundOut
+                    claimedInterface = true
+                    break 
+                }
             }
         }
 
-        if (epIn == null || epOut == null) {
+        if (!claimedInterface || epIn == null || epOut == null) {
             connection.close()
-            return "שגיאה: לא נמצאו נקודות קצה (Endpoints) תקינות."
+            return "שגיאה: לא נמצאו נקודות קצה (Endpoints) מתאימות באף Interface."
         }
 
         // 0xA0 ל-BROM, 0xA1 ל-Preloader
@@ -46,7 +59,7 @@ object MtkBromConnection {
         connection.close()
 
         if (received <= 0) {
-            return "שגיאה: לא התקבלה תגובה מהמכשיר (Timeout בקריאה). המכשיר אולי נותק."
+            return "שגיאה: לא התקבלה תגובה מהמכשיר (Timeout בקריאה). המכשיר אולי ניתק."
         }
 
         val responseHex = String.format(Locale.US, "0x%02X", resp[0])
