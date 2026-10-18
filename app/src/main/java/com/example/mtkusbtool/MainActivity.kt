@@ -19,7 +19,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     
-    // משתנה גלובלי לשמירת הקובץ בזיכרון
+    private var payloadBytes: ByteArray? = null
     private var daBytes: ByteArray? = null
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -39,7 +39,7 @@ class MainActivity : AppCompatActivity() {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
-                        executeDaFlow(device)
+                        executeBypassFlow(device)
                     } else {
                         tvStatus.text = "הרשאה נדחתה."
                     }
@@ -56,20 +56,25 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvStatus)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        tvStatus.text = "טוען קובץ DA לזיכרון..."
+        tvStatus.text = "טוען קבצים לזיכרון..."
 
-        // טוען את הקובץ ברקע מיד עם עליית האפליקציה
+        // טוען את שני הקבצים ברקע
         Thread {
             try {
-                val inputStream: InputStream = assets.open("MTK_AllInOne_DA.bin")
-                daBytes = inputStream.readBytes()
-                inputStream.close()
+                val payloadStream: InputStream = assets.open("mt6761_payload.bin")
+                payloadBytes = payloadStream.readBytes()
+                payloadStream.close()
+
+                val daStream: InputStream = assets.open("MTK_AllInOne_DA.bin")
+                daBytes = daStream.readBytes()
+                daStream.close()
+
                 runOnUiThread {
-                    tvStatus.text = "הקובץ נטען. ממתין למכשיר..."
+                    tvStatus.text = "הקבצים נטענו. ממתין למכשיר..."
                     btnHandshake.isEnabled = true
                 }
             } catch (e: Exception) {
-                runOnUiThread { tvStatus.text = "שגיאה קריטית: הקובץ MTK_AllInOne_DA.bin לא נמצא ב-assets." }
+                runOnUiThread { tvStatus.text = "שגיאה קריטית: קבצים חסרים ב-assets." }
             }
         }.start()
 
@@ -83,7 +88,7 @@ class MainActivity : AppCompatActivity() {
         btnHandshake.setOnClickListener { 
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
-                if (usbManager.hasPermission(device)) executeDaFlow(device)
+                if (usbManager.hasPermission(device)) executeBypassFlow(device)
                 else requestPermissionFast(device)
             } else {
                 tvStatus.text = "לא נמצא מכשיר MediaTek."
@@ -93,7 +98,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermissionFast(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
-            executeDaFlow(device)
+            executeBypassFlow(device)
             return
         }
         tvStatus.text = "מבקש הרשאה..."
@@ -102,18 +107,21 @@ class MainActivity : AppCompatActivity() {
         usbManager.requestPermission(device, pi)
     }
 
-    private fun executeDaFlow(device: UsbDevice) {
-        val bytes = daBytes
-        if (bytes == null) {
-            tvStatus.text = "המתן, הקובץ עדיין נטען..."
+    private fun executeBypassFlow(device: UsbDevice) {
+        val pBytes = payloadBytes
+        val dBytes = daBytes
+        if (pBytes == null || dBytes == null) {
+            tvStatus.text = "המתן, הקבצים עדיין נטענים..."
             return
         }
 
-        tvStatus.text = "מתחיל תהליך..."
+        tvStatus.text = "מתחיל פריצה..."
         btnHandshake.isEnabled = false
 
         Thread {
-            val resultMessage = MtkBromConnection.sendDaFile(usbManager, device, bytes) { progressMsg ->
+            val resultMessage = MtkBromConnection.executeBypassAndSendDa(
+                usbManager, device, pBytes, dBytes
+            ) { progressMsg ->
                 runOnUiThread { tvStatus.text = progressMsg }
             }
             runOnUiThread {
