@@ -11,12 +11,16 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import java.io.InputStream
 
 class MainActivity : AppCompatActivity() {
     private lateinit var usbManager: UsbManager
     private lateinit var tvStatus: TextView
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
+    
+    // משתנה גלובלי לשמירת הקובץ בזיכרון
+    private var daBytes: ByteArray? = null
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -51,6 +55,23 @@ class MainActivity : AppCompatActivity() {
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
         tvStatus = findViewById(R.id.tvStatus)
         btnHandshake = findViewById(R.id.btnHandshake)
+        btnHandshake.isEnabled = false
+        tvStatus.text = "טוען קובץ DA לזיכרון..."
+
+        // טוען את הקובץ ברקע מיד עם עליית האפליקציה
+        Thread {
+            try {
+                val inputStream: InputStream = assets.open("MTK_AllInOne_DA.bin")
+                daBytes = inputStream.readBytes()
+                inputStream.close()
+                runOnUiThread {
+                    tvStatus.text = "הקובץ נטען. ממתין למכשיר..."
+                    btnHandshake.isEnabled = true
+                }
+            } catch (e: Exception) {
+                runOnUiThread { tvStatus.text = "שגיאה קריטית: הקובץ MTK_AllInOne_DA.bin לא נמצא ב-assets." }
+            }
+        }.start()
 
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
@@ -82,14 +103,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executeDaFlow(device: UsbDevice) {
+        val bytes = daBytes
+        if (bytes == null) {
+            tvStatus.text = "המתן, הקובץ עדיין נטען..."
+            return
+        }
+
         tvStatus.text = "מתחיל תהליך..."
         btnHandshake.isEnabled = false
 
         Thread {
-            val resultMessage = MtkBromConnection.sendDaFile(applicationContext, usbManager, device) { progressMsg ->
-                runOnUiThread {
-                    tvStatus.text = progressMsg
-                }
+            val resultMessage = MtkBromConnection.sendDaFile(usbManager, device, bytes) { progressMsg ->
+                runOnUiThread { tvStatus.text = progressMsg }
             }
             runOnUiThread {
                 tvStatus.text = resultMessage
