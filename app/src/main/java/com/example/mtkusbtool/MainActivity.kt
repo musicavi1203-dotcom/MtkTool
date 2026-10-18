@@ -21,8 +21,6 @@ class MainActivity : AppCompatActivity() {
     
     private var payloadBytes: ByteArray? = null
     private var daBytes: ByteArray? = null
-    
-    // משתנה שמסמן שאנחנו מחכים למצב BROM אחרי קריסה
     private var waitingForBrom = false
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -32,10 +30,15 @@ class MainActivity : AppCompatActivity() {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     if (device != null && device.vendorId == 0x0E8D) {
                         if (waitingForBrom) {
-                            // המכשיר חזר! מקווים שזה בתור BROM
-                            tvStatus.text = "מכשיר התחבר מחדש (BROM). מבקש הרשאה..."
+                            tvStatus.text = "מכשיר חזר כ-BROM! ממתין להתייצבות ה-USB..."
                             waitingForBrom = false
-                            requestPermissionFast(device)
+                            // השהיה של 2 שניות לפני בקשת הרשאה, כדי לתת ל-USB להתייצב
+                            Thread {
+                                Thread.sleep(2000)
+                                runOnUiThread {
+                                    requestPermissionFast(device)
+                                }
+                            }.start()
                         } else {
                             requestPermissionFast(device)
                         }
@@ -53,12 +56,10 @@ class MainActivity : AppCompatActivity() {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
-                        // בודקים אם אנחנו במצב BROM (PID 0x0003 או 0x0001)
                         val isBrom = device.productId == 0x0003 || device.productId == 0x0001
                         if (isBrom) {
                             executeBypassFlow(device)
                         } else {
-                            // אם זה עדיין Preloader, מבצעים קריסה
                             crashAndWait()
                         }
                     } else {
@@ -131,7 +132,6 @@ class MainActivity : AppCompatActivity() {
         usbManager.requestPermission(device, pi)
     }
 
-    // פונקציה חדשה: מבצעת את הקריסה וממתינה
     private fun crashAndWait() {
         val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D } ?: return
         tvStatus.text = "מנסה לגרום ל-Preloader לקרוס (Crash)..."
@@ -143,7 +143,6 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (success) {
                     tvStatus.text = "פקודת קריסה נשלחה. ממתין ל-BROM..."
-                    // אם ה-USB מתנתק, ה-BroadcastReceiver יטפל בזה
                 } else {
                     tvStatus.text = "שגיאה בקריסה. נסה שוב."
                     waitingForBrom = false
@@ -165,6 +164,9 @@ class MainActivity : AppCompatActivity() {
         btnHandshake.isEnabled = false
 
         Thread {
+            // השהיה נוספת לפני הפריצה עצמה, רק למקרה
+            Thread.sleep(1000) 
+            
             val resultMessage = MtkBromConnection.executeBypassAndSendDa(
                 usbManager, device, pBytes, dBytes
             ) { progressMsg ->
