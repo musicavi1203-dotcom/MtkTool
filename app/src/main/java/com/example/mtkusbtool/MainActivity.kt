@@ -12,6 +12,7 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import java.io.InputStream
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var usbManager: UsbManager
@@ -29,28 +30,23 @@ class MainActivity : AppCompatActivity() {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     if (device != null && device.vendorId == 0x0E8D) {
+                        val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         if (waitingForBrom) {
-                            tvStatus.text = "מכשיר חזר כ-BROM! ממתין להתייצבות ה-USB..."
+                            tvStatus.text = "מכשיר חזר (PID: $pidStr). ממתין 1 שנייה..."
                             waitingForBrom = false
-                            // השהיה של 2 שניות לפני בקשת הרשאה, כדי לתת ל-USB להתייצב
                             Thread {
-                                Thread.sleep(2000)
-                                runOnUiThread {
-                                    requestPermissionFast(device)
-                                }
+                                Thread.sleep(1000) // השהיה קצרה יותר
+                                runOnUiThread { requestPermissionFast(device) }
                             }.start()
                         } else {
+                            tvStatus.text = "מכשיר זוהה (PID: $pidStr). מבקש הרשאה..."
                             requestPermissionFast(device)
                         }
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    if (waitingForBrom) {
-                        tvStatus.text = "מכשיר קרס. ממתין לאתחול מחדש כ-BROM..."
-                    } else {
-                        tvStatus.text = "המכשיר נותק."
-                        btnHandshake.isEnabled = false
-                    }
+                    tvStatus.text = if (waitingForBrom) "מכשיר קרס. ממתין לאתחול מחדש..." else "המכשיר נותק."
+                    if (!waitingForBrom) btnHandshake.isEnabled = false
                 }
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
@@ -78,24 +74,22 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvStatus)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        tvStatus.text = "טוען קבצים לזיכרון..."
+        tvStatus.text = "טוען קבצים..."
 
         Thread {
             try {
                 val payloadStream: InputStream = assets.open("mt6761_payload.bin")
                 payloadBytes = payloadStream.readBytes()
                 payloadStream.close()
-
                 val daStream: InputStream = assets.open("MTK_AllInOne_DA.bin")
                 daBytes = daStream.readBytes()
                 daStream.close()
-
                 runOnUiThread {
                     tvStatus.text = "הקבצים נטענו. ממתין למכשיר..."
                     btnHandshake.isEnabled = true
                 }
             } catch (e: Exception) {
-                runOnUiThread { tvStatus.text = "שגיאה קריטית: קבצים חסרים ב-assets." }
+                runOnUiThread { tvStatus.text = "שגיאה: קבצים חסרים ב-assets." }
             }
         }.start()
 
@@ -112,8 +106,7 @@ class MainActivity : AppCompatActivity() {
                 if (usbManager.hasPermission(device)) {
                     val isBrom = device.productId == 0x0003 || device.productId == 0x0001
                     if (isBrom) executeBypassFlow(device) else crashAndWait()
-                }
-                else requestPermissionFast(device)
+                } else requestPermissionFast(device)
             } else {
                 tvStatus.text = "לא נמצא מכשיר MediaTek."
             }
@@ -126,7 +119,6 @@ class MainActivity : AppCompatActivity() {
             if (isBrom) executeBypassFlow(device) else crashAndWait()
             return
         }
-        tvStatus.text = "מבקש הרשאה..."
         val intent = Intent(ACTION_USB_PERMISSION)
         val pi = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_MUTABLE)
         usbManager.requestPermission(device, pi)
@@ -134,12 +126,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun crashAndWait() {
         val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D } ?: return
-        tvStatus.text = "מנסה לגרום ל-Preloader לקרוס (Crash)..."
+        tvStatus.text = "מנסה לקרוס (Crash אגרסיבי)..."
         btnHandshake.isEnabled = false
         waitingForBrom = true
 
         Thread {
-            val success = MtkBromConnection.crashPreloader(usbManager, device)
+            val success = MtkBromConnection.aggressiveCrash(usbManager, device)
             runOnUiThread {
                 if (success) {
                     tvStatus.text = "פקודת קריסה נשלחה. ממתין ל-BROM..."
@@ -156,7 +148,7 @@ class MainActivity : AppCompatActivity() {
         val pBytes = payloadBytes
         val dBytes = daBytes
         if (pBytes == null || dBytes == null) {
-            tvStatus.text = "המתן, הקבצים עדיין נטענים..."
+            tvStatus.text = "המתן, הקבצים נטענים..."
             return
         }
 
@@ -164,14 +156,9 @@ class MainActivity : AppCompatActivity() {
         btnHandshake.isEnabled = false
 
         Thread {
-            // השהיה נוספת לפני הפריצה עצמה, רק למקרה
-            Thread.sleep(1000) 
-            
             val resultMessage = MtkBromConnection.executeBypassAndSendDa(
                 usbManager, device, pBytes, dBytes
-            ) { progressMsg ->
-                runOnUiThread { tvStatus.text = progressMsg }
-            }
+            ) { progressMsg -> runOnUiThread { tvStatus.text = progressMsg } }
             runOnUiThread {
                 tvStatus.text = resultMessage
                 btnHandshake.isEnabled = true
