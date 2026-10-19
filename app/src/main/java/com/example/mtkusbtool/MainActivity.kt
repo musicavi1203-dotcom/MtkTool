@@ -42,7 +42,6 @@ class MainActivity : AppCompatActivity() {
                     if (device != null && device.vendorId == 0x0E8D) {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         addLog(">> מכשיר התחבר. PID: $pidStr")
-                        
                         if (kamakiriDone && device.productId == 0x0003) {
                             addLog(">> זוהה BROM! מנסה לשלוח DA...")
                             if (usbManager.hasPermission(device)) {
@@ -163,25 +162,25 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             var attempts = 0
-            while (isPolling && attempts < 100) { // 10 seconds max
+            var found = false
+            while (isPolling && attempts < 100) {
                 val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D && it.productId == 0x0003 }
                 if (device != null) {
+                    found = true
+                    isPolling = false
                     if (usbManager.hasPermission(device)) {
                         addLog(">> לופ: מצאתי BROM עם הרשאה! שולח DA...")
-                        isPolling = false
                         runOnUiThread { executeDaOnReconnect(device) }
-                        return@Thread
                     } else {
                         addLog(">> לופ: מצאתי BROM, מבקש הרשאה...")
-                        isPolling = false
                         runOnUiThread { requestPermissionFast(device, true) }
-                        return@Thread
                     }
+                    break
                 }
                 Thread.sleep(100)
                 attempts++
             }
-            if (attempts >= 100) {
+            if (!found) {
                 isPolling = false
                 runOnUiThread {
                     addLog("!! לופ: לא נמצא BROM תוך 10 שניות.")
