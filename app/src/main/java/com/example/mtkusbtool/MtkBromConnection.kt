@@ -80,6 +80,7 @@ object MtkBromConnection {
         usbManager: UsbManager,
         device: UsbDevice,
         daBytes: ByteArray,
+        daName: String,
         onProgress: (String) -> Unit
     ): String {
         val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת חיבור נכשלה."
@@ -109,44 +110,46 @@ object MtkBromConnection {
 
         val isBrom = device.productId == 0x0003 || device.productId == 0x0001
         val hsCmd = if (isBrom) 0xA0.toByte() else 0xA1.toByte()
-        onProgress("Reconnected. Handshake (0x${String.format(Locale.US, "%02X", hsCmd)})...")
+        onProgress("Trying $daName (${daBytes.size} bytes)... Handshake 0x${String.format(Locale.US, "%02X", hsCmd)}")
         usbwrite(byteArrayOf(hsCmd)); usbread(1)
 
         onProgress("Sending 0xD7...")
-        if (!usbwrite(byteArrayOf(0xD7.toByte()))) { connection.close(); return "שגיאה: 0xD7 נכשל." }
+        if (!usbwrite(byteArrayOf(0xD7.toByte()))) { connection.close(); return "FAIL:0xD7 write" }
         val ack1 = usbread(1)
         if (ack1.isEmpty() || ack1[0] != 0xD8.toByte()) {
             connection.close()
-            return "שגיאה: תגובה ל-0xD7: ${if(ack1.isNotEmpty()) String.format(Locale.US, "0x%02X", ack1[0]) else "אין"}"
+            return "FAIL:0xD7 ack=${if(ack1.isNotEmpty()) String.format(Locale.US, "0x%02X", ack1[0]) else "none"}"
         }
 
+        onProgress("Sending size...")
         val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
-        if (!usbwrite(sizeBytes)) { connection.close(); return "שגיאה: שליחת גודל נכשלה." }
+        if (!usbwrite(sizeBytes)) { connection.close(); return "FAIL:size write" }
         val ack2 = usbread(1)
         if (ack2.isEmpty() || ack2[0] != 0xD9.toByte()) {
             connection.close()
-            return "שגיאה: תגובה לגודל: ${if(ack2.isNotEmpty()) String.format(Locale.US, "0x%02X", ack2[0]) else "אין"}"
+            return "FAIL:size ack=${if(ack2.isNotEmpty()) String.format(Locale.US, "0x%02X", ack2[0]) else "none"}"
         }
 
+        onProgress("Sending data...")
         var offset = 0
         val chunkSize = 512
         while (offset < daBytes.size) {
             val length = minOf(chunkSize, daBytes.size - offset)
             val chunk = daBytes.copyOfRange(offset, offset + length)
-            if (!usbwrite(chunk)) { connection.close(); return "שגיאה: שליחת נתונים ב-$offset." }
+            if (!usbwrite(chunk)) { connection.close(); return "FAIL:data write at $offset" }
             val ack = usbread(1)
             if (ack.isEmpty() || (ack[0] != 0x5A.toByte() && ack[0] != 0x5F.toByte())) {
                 connection.close()
-                return "שגיאה: תגובה לנתונים ב-$offset: ${if(ack.isNotEmpty()) String.format(Locale.US, "0x%02X", ack[0]) else "אין"}"
+                return "FAIL:data ack at $offset = ${if(ack.isNotEmpty()) String.format(Locale.US, "0x%02X", ack[0]) else "none"}"
             }
             offset += length
-            if (offset % (chunkSize * 20) == 0) onProgress("DA: ${(offset * 100) / daBytes.size}%")
+            if (offset % (chunkSize * 40) == 0) onProgress("$daName: ${(offset * 100) / daBytes.size}%")
         }
 
         onProgress("Running DA...")
-        if (!usbwrite(byteArrayOf(0xD5.toByte()))) { connection.close(); return "שגיאה: 0xD5 נכשל." }
+        if (!usbwrite(byteArrayOf(0xD5.toByte()))) { connection.close(); return "FAIL:0xD5 write" }
         usbread(2)
         connection.close()
-        return "הצלחה מסחררת! ה-DA נטען והורץ!"
+        return "SUCCESS"
     }
 }
