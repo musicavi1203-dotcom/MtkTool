@@ -21,8 +21,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     
-    private var authBytes: ByteArray? = null
-    private var daBytes: ByteArray? = null
+    private var payloadBytes: ByteArray? = null
 
     private fun addLog(message: String) {
         runOnUiThread {
@@ -54,8 +53,8 @@ class MainActivity : AppCompatActivity() {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
                         addLog(">> הרשאה אושרה.")
-                        tvStatus.text = "שולח Auth ו-DA..."
-                        executeAuthAndDaFlow(device)
+                        tvStatus.text = "מריץ פריצה..."
+                        executeExploit(device)
                     } else {
                         addLog("!! הרשאה נדחתה.")
                         tvStatus.text = "הרשאה נדחתה."
@@ -74,19 +73,14 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        tvStatus.text = "טוען קבצים..."
+        tvStatus.text = "טוען Payload..."
 
         Thread {
             try {
-                addLog("טוען קובץ Auth...")
-                val authStream: InputStream = assets.open("auth_sv5.auth")
-                authBytes = authStream.readBytes()
-                authStream.close()
-                
-                addLog("טוען קובץ DA...")
-                val daStream: InputStream = assets.open("MTK_AllInOne_DA.bin")
-                daBytes = daStream.readBytes()
-                daStream.close()
+                addLog("טוען Payload (mt6761_payload.bin)...")
+                val payloadStream: InputStream = assets.open("mt6761_payload.bin")
+                payloadBytes = payloadStream.readBytes()
+                payloadStream.close()
                 
                 addLog("הקבצים נטענו בהצלחה.")
                 runOnUiThread {
@@ -111,7 +105,7 @@ class MainActivity : AppCompatActivity() {
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 if (usbManager.hasPermission(device)) {
-                    executeAuthAndDaFlow(device)
+                    executeExploit(device)
                 } else requestPermissionFast(device)
             } else {
                 addLog("!! לא נמצא מכשיר MediaTek.")
@@ -121,7 +115,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermissionFast(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
-            executeAuthAndDaFlow(device)
+            executeExploit(device)
             return
         }
         addLog("מבקש הרשאת USB...")
@@ -130,22 +124,21 @@ class MainActivity : AppCompatActivity() {
         usbManager.requestPermission(device, pi)
     }
 
-    private fun executeAuthAndDaFlow(device: UsbDevice) {
-        val aBytes = authBytes
-        val dBytes = daBytes
-        if (aBytes == null || dBytes == null) {
+    private fun executeExploit(device: UsbDevice) {
+        val pBytes = payloadBytes
+        if (pBytes == null) {
             addLog("!! קבצים חסרים.")
             tvStatus.text = "המתן..."
             return
         }
 
-        tvStatus.text = "שולח Auth ו-DA..."
-        addLog("מתחיל שליחת Auth + DA...")
+        tvStatus.text = "מריץ פריצה..."
+        addLog("מתחיל פריצת Kamakiri...")
         btnHandshake.isEnabled = false
 
         Thread {
-            val resultMessage = MtkBromConnection.sendAuthAndDa(
-                usbManager, device, aBytes, dBytes
+            val resultMessage = MtkBromConnection.runKamakiriExploit(
+                usbManager, device, pBytes
             ) { progressMsg -> 
                 addLog(progressMsg) 
             }
