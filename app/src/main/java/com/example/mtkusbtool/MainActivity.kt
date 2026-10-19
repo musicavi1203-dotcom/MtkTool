@@ -22,6 +22,7 @@ class MainActivity : AppCompatActivity() {
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     
     private var payloadBytes: ByteArray? = null
+    private var daBytes: ByteArray? = null
 
     private fun addLog(message: String) {
         runOnUiThread {
@@ -73,7 +74,7 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        tvStatus.text = "טוען Payload..."
+        tvStatus.text = "טוען קבצים..."
 
         Thread {
             try {
@@ -82,6 +83,11 @@ class MainActivity : AppCompatActivity() {
                 payloadBytes = payloadStream.readBytes()
                 payloadStream.close()
                 
+                addLog("טוען DA (DA_SWSEC.bin)...")
+                val daStream: InputStream = assets.open("DA_SWSEC.bin")
+                daBytes = daStream.readBytes()
+                daStream.close()
+
                 addLog("הקבצים נטענו בהצלחה.")
                 runOnUiThread {
                     tvStatus.text = "מוכן. ממתין למכשיר..."
@@ -126,19 +132,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun executeExploit(device: UsbDevice) {
         val pBytes = payloadBytes
-        if (pBytes == null) {
+        val dBytes = daBytes
+        if (pBytes == null || dBytes == null) {
             addLog("!! קבצים חסרים.")
             tvStatus.text = "המתן..."
             return
         }
 
         tvStatus.text = "מריץ פריצה..."
-        addLog("מתחיל פריצת Kamakiri...")
+        addLog("מתחיל פריצת Kamakiri ושליחת DA...")
         btnHandshake.isEnabled = false
 
         Thread {
-            val resultMessage = MtkBromConnection.runKamakiriExploit(
-                usbManager, device, pBytes
+            val resultMessage = MtkBromConnection.runKamakiriAndSendDa(
+                usbManager, device, pBytes, dBytes
             ) { progressMsg -> 
                 addLog(progressMsg) 
             }
