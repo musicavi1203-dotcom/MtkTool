@@ -83,8 +83,8 @@ class MainActivity : AppCompatActivity() {
                 payloadBytes = payloadStream.readBytes()
                 payloadStream.close()
                 
-                addLog("טוען DA (DA_SWSEC.bin)...")
-                val daStream: InputStream = assets.open("DA_SWSEC.bin")
+                addLog("טוען DA (DA_SWSEC_CRYPTO20.bin)...")
+                val daStream: InputStream = assets.open("DA_SWSEC_CRYPTO20.bin")
                 daBytes = daStream.readBytes()
                 daStream.close()
 
@@ -140,7 +140,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         tvStatus.text = "מריץ פריצה..."
-        addLog("מתחיל פריצת Kamakiri ושליחת DA...")
+        addLog("מתחיל פריצת Kamakiri ושליחת DA (CRYPTO20)...")
         btnHandshake.isEnabled = false
 
         Thread {
