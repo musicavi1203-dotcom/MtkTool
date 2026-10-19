@@ -23,7 +23,6 @@ class MainActivity : AppCompatActivity() {
     
     private var payloadBytes: ByteArray? = null
     private var daBytes: ByteArray? = null
-    private var kamakiriSuccess = false
 
     private fun addLog(message: String) {
         runOnUiThread {
@@ -41,14 +40,8 @@ class MainActivity : AppCompatActivity() {
                     if (device != null && device.vendorId == 0x0E8D) {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         addLog(">> מכשיר התחבר. PID: $pidStr")
-                        
-                        if (kamakiriSuccess) {
-                            addLog(">> מכשיר חזר אחרי Kamakiri. ממשיך ל-DA...")
-                            requestPermissionFast(device, true)
-                        } else {
-                            tvStatus.text = "מבקש הרשאה..."
-                            requestPermissionFast(device, false)
-                        }
+                        tvStatus.text = "מבקש הרשאה..."
+                        requestPermissionFast(device)
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
@@ -61,11 +54,8 @@ class MainActivity : AppCompatActivity() {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
                         addLog(">> הרשאה אושרה.")
-                        if (kamakiriSuccess) {
-                            executeDaOnly(device)
-                        } else {
-                            executeKamakiri(device)
-                        }
+                        tvStatus.text = "מריץ פריצה..."
+                        executeExploit(device)
                     } else {
                         addLog("!! הרשאה נדחתה.")
                         tvStatus.text = "הרשאה נדחתה."
@@ -88,12 +78,12 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                addLog("טוען Payload...")
+                addLog("טוען Payload (mt6761_payload.bin)...")
                 val payloadStream: InputStream = assets.open("mt6761_payload.bin")
                 payloadBytes = payloadStream.readBytes()
                 payloadStream.close()
                 
-                addLog("טוען DA...")
+                addLog("טוען DA (DA_SWSEC.bin)...")
                 val daStream: InputStream = assets.open("DA_SWSEC.bin")
                 daBytes = daStream.readBytes()
                 daStream.close()
@@ -121,19 +111,17 @@ class MainActivity : AppCompatActivity() {
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 if (usbManager.hasPermission(device)) {
-                    if (kamakiriSuccess) executeDaOnly(device) else executeKamakiri(device)
-                } else {
-                    requestPermissionFast(device, kamakiriSuccess)
-                }
+                    executeExploit(device)
+                } else requestPermissionFast(device)
             } else {
                 addLog("!! לא נמצא מכשיר MediaTek.")
             }
         }
     }
 
-    private fun requestPermissionFast(device: UsbDevice, isDaPhase: Boolean) {
+    private fun requestPermissionFast(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
-            if (isDaPhase) executeDaOnly(device) else executeKamakiri(device)
+            executeExploit(device)
             return
         }
         addLog("מבקש הרשאת USB...")
@@ -142,60 +130,29 @@ class MainActivity : AppCompatActivity() {
         usbManager.requestPermission(device, pi)
     }
 
-    private fun executeKamakiri(device: UsbDevice) {
+    private fun executeExploit(device: UsbDevice) {
         val pBytes = payloadBytes
-        if (pBytes == null) {
-            addLog("!! קבצים חסרים.")
-            return
-        }
-
-        tvStatus.text = "מריץ Kamakiri..."
-        addLog("מתחיל פריצת Kamakiri...")
-        btnHandshake.isEnabled = false
-
-        Thread {
-            val resultMessage = MtkBromConnection.runKamakiriExploit(
-                usbManager, device, pBytes
-            ) { progressMsg -> addLog(progressMsg) }
-            
-            runOnUiThread {
-                if (resultMessage == "SUCCESS") {
-                    kamakiriSuccess = true
-                    addLog("== Kamakiri הצליח! ממתין לחיבור מחדש...")
-                    tvStatus.text = "ממתין לחיבור מחדש..."
-                } else {
-                    addLog("== סיום: $resultMessage")
-                    tvStatus.text = resultMessage
-                    btnHandshake.isEnabled = true
-                }
-            }
-        }.start()
-    }
-
-    private fun executeDaOnly(device: UsbDevice) {
         val dBytes = daBytes
-        if (dBytes == null) {
-            addLog("!! קובץ DA חסר.")
+        if (pBytes == null || dBytes == null) {
+            addLog("!! קבצים חסרים.")
+            tvStatus.text = "המתן..."
             return
         }
 
-        tvStatus.text = "שולח DA..."
-        addLog("מתחיל שליחת DA (מכשיר פרוץ)...")
+        tvStatus.text = "מריץ פריצה..."
+        addLog("מתחיל פריצת Kamakiri ושליחת DA...")
         btnHandshake.isEnabled = false
 
         Thread {
-            val resultMessage = MtkBromConnection.sendDaAfterExploit(
-                usbManager, device, dBytes
-            ) { progressMsg -> addLog(progressMsg) }
-            
+            val resultMessage = MtkBromConnection.runKamakiriAndSendDa(
+                usbManager, device, pBytes, dBytes
+            ) { progressMsg -> 
+                addLog(progressMsg) 
+            }
             runOnUiThread {
                 addLog("== סיום: $resultMessage")
                 tvStatus.text = resultMessage
                 btnHandshake.isEnabled = true
-                // Reset if failed so user can try again
-                if (!resultMessage.contains("הצלחה")) {
-                    kamakiriSuccess = false
-                }
             }
         }.start()
     }
