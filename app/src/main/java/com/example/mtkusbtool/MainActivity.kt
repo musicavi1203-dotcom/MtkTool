@@ -21,9 +21,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     
-    private var payloadBytes: ByteArray? = null
     private var daBytes: ByteArray? = null
-    private var waitingForBrom = false
 
     private fun addLog(message: String) {
         runOnUiThread {
@@ -41,25 +39,14 @@ class MainActivity : AppCompatActivity() {
                     if (device != null && device.vendorId == 0x0E8D) {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         addLog(">> מכשיר התחבר. PID: $pidStr")
-                        
-                        if (waitingForBrom) {
-                            tvStatus.text = "מכשיר חזר כ-BROM"
-                            addLog(">> ממתין 1.5 שניות...")
-                            waitingForBrom = false
-                            Thread {
-                                Thread.sleep(1500)
-                                runOnUiThread { requestPermissionFast(device) }
-                            }.start()
-                        } else {
-                            tvStatus.text = "מבקש הרשאה..."
-                            requestPermissionFast(device)
-                        }
+                        tvStatus.text = "מבקש הרשאה..."
+                        requestPermissionFast(device)
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     addLog("<< מכשיר התנתק.")
-                    tvStatus.text = if (waitingForBrom) "מכשיר קרס. ממתין..." else "המכשיר נותק."
-                    if (!waitingForBrom) btnHandshake.isEnabled = false
+                    tvStatus.text = "המכשיר נותק."
+                    btnHandshake.isEnabled = false
                 }
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
@@ -67,14 +54,8 @@ class MainActivity : AppCompatActivity() {
                     if (granted && device != null) {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         addLog(">> הרשאה אושרה. PID: $pidStr")
-                        val isBrom = device.productId == 0x0003 || device.productId == 0x0001
-                        if (isBrom) {
-                            tvStatus.text = "מריץ פריצה..."
-                            executeBypassFlow(device)
-                        } else {
-                            tvStatus.text = "מבצע קריסה..."
-                            crashAndWait()
-                        }
+                        tvStatus.text = "מריץ שליחת DA..."
+                        executeDaFlow(device)
                     } else {
                         addLog("!! הרשאה נדחתה.")
                         tvStatus.text = "הרשאה נדחתה."
@@ -93,21 +74,16 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        tvStatus.text = "טוען קבצים..."
+        tvStatus.text = "טוען קובץ DA..."
 
         Thread {
             try {
-                addLog("טוען Payload...")
-                val payloadStream: InputStream = assets.open("mt6761_payload.bin")
-                payloadBytes = payloadStream.readBytes()
-                payloadStream.close()
-                
                 addLog("טוען DA...")
                 val daStream: InputStream = assets.open("DA_SWSEC.bin")
                 daBytes = daStream.readBytes()
                 daStream.close()
                 
-                addLog("הקבצים נטענו בהצלחה.")
+                addLog("ה-DA נטען בהצלחה.")
                 runOnUiThread {
                     tvStatus.text = "מוכן. ממתין למכשיר..."
                     btnHandshake.isEnabled = true
@@ -130,8 +106,7 @@ class MainActivity : AppCompatActivity() {
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 if (usbManager.hasPermission(device)) {
-                    val isBrom = device.productId == 0x0003 || device.productId == 0x0001
-                    if (isBrom) executeBypassFlow(device) else crashAndWait()
+                    executeDaFlow(device)
                 } else requestPermissionFast(device)
             } else {
                 addLog("!! לא נמצא מכשיר MediaTek.")
@@ -141,8 +116,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermissionFast(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
-            val isBrom = device.productId == 0x0003 || device.productId == 0x0001
-            if (isBrom) executeBypassFlow(device) else crashAndWait()
+            executeDaFlow(device)
             return
         }
         addLog("מבקש הרשאת USB...")
@@ -151,45 +125,21 @@ class MainActivity : AppCompatActivity() {
         usbManager.requestPermission(device, pi)
     }
 
-    private fun crashAndWait() {
-        val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D } ?: return
-        tvStatus.text = "מנסה לקרוס..."
-        addLog("שולח פקודת קריסה...")
-        btnHandshake.isEnabled = false
-        waitingForBrom = true
-
-        Thread {
-            val success = MtkBromConnection.aggressiveCrash(usbManager, device)
-            runOnUiThread {
-                if (success) {
-                    addLog("פקודת קריסה נשלחה בהצלחה.")
-                    tvStatus.text = "ממתין ל-BROM..."
-                } else {
-                    addLog("!! קריסה נכשלה.")
-                    tvStatus.text = "שגיאה בקריסה."
-                    waitingForBrom = false
-                    btnHandshake.isEnabled = true
-                }
-            }
-        }.start()
-    }
-
-    private fun executeBypassFlow(device: UsbDevice) {
-        val pBytes = payloadBytes
+    private fun executeDaFlow(device: UsbDevice) {
         val dBytes = daBytes
-        if (pBytes == null || dBytes == null) {
+        if (dBytes == null) {
             addLog("!! קבצים חסרים.")
             tvStatus.text = "המתן..."
             return
         }
 
-        tvStatus.text = "מריץ פריצה..."
-        addLog("מתחיל פריצה...")
+        tvStatus.text = "שולח DA..."
+        addLog("מתחיל שליחת DA...")
         btnHandshake.isEnabled = false
 
         Thread {
-            val resultMessage = MtkBromConnection.executeBypassAndSendDa(
-                usbManager, device, pBytes, dBytes
+            val resultMessage = MtkBromConnection.sendDaToPreloader(
+                usbManager, device, dBytes
             ) { progressMsg -> 
                 addLog(progressMsg) 
             }
