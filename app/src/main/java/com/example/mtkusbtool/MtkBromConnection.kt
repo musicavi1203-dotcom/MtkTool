@@ -34,9 +34,10 @@ object MtkBromConnection {
         return true
     }
 
-    fun executeDaOnly(
+    fun executeBypassAndSendDa(
         usbManager: UsbManager, 
         device: UsbDevice,
+        payloadBytes: ByteArray,
         daBytes: ByteArray,
         onProgress: (String) -> Unit
     ): String {
@@ -75,35 +76,49 @@ object MtkBromConnection {
             }
         }
 
-        // 2. שליחת ה-DA בלבד
-        onProgress("מכין לשלוח DA (${daBytes.size} בייט)...")
-        connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000)
-        val ack1 = readAck()
-        if (ack1 != 0xD8.toByte()) { connection.close(); return "שגיאה: תגובת 0xD7 לא תקינה (${ack1?.let { String.format(Locale.US, "0x%02X", it) } ?: "אין"})" }
+        // פונקציה פנימית
+        fun sendBinaryFile(fileName: String, fileBytes: ByteArray): String? {
+            onProgress("מכין לשלוח $fileName (${fileBytes.size} בייט)...")
+            connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000)
+            val ack1 = readAck()
+            if (ack1 != 0xD8.toByte()) return "שגיאה ב-$fileName: תגובת 0xD7 לא תקינה (${ack1?.let { String.format(Locale.US, "0x%02X", it) } ?: "אין"})"
 
-        val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
-        connection.bulkTransfer(epOut, sizeBytes, 4, 2000)
-        val ack2 = readAck()
-        if (ack2 != 0xD9.toByte()) { connection.close(); return "שגיאה: תגובת גודל לא תקינה (${ack2?.let { String.format(Locale.US, "0x%02X", it) } ?: "אין"})" }
+            val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(fileBytes.size).array()
+            connection.bulkTransfer(epOut, sizeBytes, 4, 2000)
+            val ack2 = readAck()
+            if (ack2 != 0xD9.toByte()) return "שגיאה ב-$fileName: תגובת גודל לא תקינה (${ack2?.let { String.format(Locale.US, "0x%02X", it) } ?: "אין"})"
 
-        var offset = 0
-        val chunkSize = 512
-        while (offset < daBytes.size) {
-            val length = minOf(chunkSize, daBytes.size - offset)
-            val chunk = daBytes.copyOfRange(offset, offset + length)
-            if (connection.bulkTransfer(epOut, chunk, length, 2000) < 0) { connection.close(); return "שגיאה: שליחת נתונים נכשלה ב-$offset." }
-            val ack = readAck()
-            if (ack != 0x5A.toByte() && ack != 0x5F.toByte()) { connection.close(); return "שגיאה: תגובת נתונים לא תקינה (${ack?.let { String.format(Locale.US, "0x%02X", it) } ?: "אין"})" }
-            offset += length
-            if (offset % (chunkSize * 20) == 0) onProgress("DA: ${(offset * 100) / daBytes.size}%")
+            var offset = 0
+            val chunkSize = 512
+            while (offset < fileBytes.size) {
+                val length = minOf(chunkSize, fileBytes.size - offset)
+                val chunk = fileBytes.copyOfRange(offset, offset + length)
+                if (connection.bulkTransfer(epOut, chunk, length, 2000) < 0) return "שגיאה ב-$fileName: שליחת נתונים נכשלה ב-$offset."
+                val ack = readAck()
+                if (ack != 0x5A.toByte() && ack != 0x5F.toByte()) return "שגיאה ב-$fileName: תגובת נתונים לא תקינה (${ack?.let { String.format(Locale.US, "0x%02X", it) } ?: "אין"})"
+                offset += length
+                if (offset % (chunkSize * 20) == 0) onProgress("$fileName: ${(offset * 100) / fileBytes.size}%")
+            }
+            return null // Success
         }
 
-        // 3. הרצת ה-DA
+        // 2. שליחת ה-Payload
+        sendBinaryFile("Payload", payloadBytes)?.let { connection.close(); return it }
+
+        // 3. הרצת ה-Payload
+        onProgress("מריץ Payload...")
+        connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000)
+        readAck()
+        
+        // 4. שליחת ה-DA
+        sendBinaryFile("DA", daBytes)?.let { connection.close(); return it }
+
+        // 5. הרצת ה-DA
         onProgress("מריץ DA...")
         connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000)
         readAck()
         
         connection.close()
-        return "הצלחה מסחררת! ה-DA נשלח והורץ. המכשיר פרוץ!"
+        return "הצלחה מסחררת! המכשיר פרוץ!"
     }
 }
