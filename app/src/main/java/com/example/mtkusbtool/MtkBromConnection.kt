@@ -115,10 +115,17 @@ object MtkBromConnection {
             onProgress("ctrl_transfer returned: ${e.message}")
         }
 
-        // --- Continue on the SAME connection ---
+        // --- Send 0xD2 to prevent reset ---
+        onProgress("Sending 0xD2 (prevent reset)...")
+        if (usbwrite(byteArrayOf(0xD2.toByte()))) {
+            onProgress("0xD2 sent successfully!")
+        } else {
+            onProgress("0xD2 failed - connection may be dead")
+        }
+
+        // --- Send DA on same connection ---
         onProgress("Sending DA on same connection...")
         
-        // 1. פקודת Send DA (0xD7)
         if (!usbwrite(byteArrayOf(0xD7.toByte()))) {
             connection.close()
             return "שגיאה: שליחת פקודת DA (0xD7) נכשלה."
@@ -131,7 +138,6 @@ object MtkBromConnection {
             return "שגיאה: תגובה ל-0xD7 לא תקינה ($hex)."
         }
 
-        // 2. שליחת גודל
         val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
         if (!usbwrite(sizeBytes)) {
             connection.close()
@@ -145,7 +151,6 @@ object MtkBromConnection {
             return "שגיאה: תגובה לגודל לא תקינה ($hex)."
         }
 
-        // 3. שליחת נתונים
         var offset = 0
         val chunkSize = 512
         while (offset < daBytes.size) {
@@ -170,7 +175,6 @@ object MtkBromConnection {
             }
         }
 
-        // 4. הרצת DA
         onProgress("Running DA...")
         if (!usbwrite(byteArrayOf(0xD5.toByte()))) {
             connection.close()
