@@ -21,6 +21,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     
+    private var payloadBytes: ByteArray? = null
     private var daBytes: ByteArray? = null
     private var waitingForBrom = false
 
@@ -68,8 +69,8 @@ class MainActivity : AppCompatActivity() {
                         addLog(">> הרשאה אושרה. PID: $pidStr")
                         val isBrom = device.productId == 0x0003 || device.productId == 0x0001
                         if (isBrom) {
-                            tvStatus.text = "מריץ DA..."
-                            executeDaFlow(device)
+                            tvStatus.text = "מריץ פריצה..."
+                            executeBypassFlow(device)
                         } else {
                             tvStatus.text = "מבצע קריסה..."
                             crashAndWait()
@@ -96,12 +97,17 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
+                addLog("טוען Payload...")
+                val payloadStream: InputStream = assets.open("mt6761_payload.bin")
+                payloadBytes = payloadStream.readBytes()
+                payloadStream.close()
+                
                 addLog("טוען DA...")
                 val daStream: InputStream = assets.open("DA_SWSEC.bin")
                 daBytes = daStream.readBytes()
                 daStream.close()
                 
-                addLog("ה-DA נטען בהצלחה.")
+                addLog("הקבצים נטענו בהצלחה.")
                 runOnUiThread {
                     tvStatus.text = "מוכן. ממתין למכשיר..."
                     btnHandshake.isEnabled = true
@@ -125,7 +131,7 @@ class MainActivity : AppCompatActivity() {
             if (device != null) {
                 if (usbManager.hasPermission(device)) {
                     val isBrom = device.productId == 0x0003 || device.productId == 0x0001
-                    if (isBrom) executeDaFlow(device) else crashAndWait()
+                    if (isBrom) executeBypassFlow(device) else crashAndWait()
                 } else requestPermissionFast(device)
             } else {
                 addLog("!! לא נמצא מכשיר MediaTek.")
@@ -136,7 +142,7 @@ class MainActivity : AppCompatActivity() {
     private fun requestPermissionFast(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
             val isBrom = device.productId == 0x0003 || device.productId == 0x0001
-            if (isBrom) executeDaFlow(device) else crashAndWait()
+            if (isBrom) executeBypassFlow(device) else crashAndWait()
             return
         }
         addLog("מבקש הרשאת USB...")
@@ -168,21 +174,22 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun executeDaFlow(device: UsbDevice) {
+    private fun executeBypassFlow(device: UsbDevice) {
+        val pBytes = payloadBytes
         val dBytes = daBytes
-        if (dBytes == null) {
+        if (pBytes == null || dBytes == null) {
             addLog("!! קבצים חסרים.")
             tvStatus.text = "המתן..."
             return
         }
 
-        tvStatus.text = "מריץ DA..."
-        addLog("מתחיל שליחת DA...")
+        tvStatus.text = "מריץ פריצה..."
+        addLog("מתחיל פריצה...")
         btnHandshake.isEnabled = false
 
         Thread {
-            val resultMessage = MtkBromConnection.executeDaOnly(
-                usbManager, device, dBytes
+            val resultMessage = MtkBromConnection.executeBypassAndSendDa(
+                usbManager, device, pBytes, dBytes
             ) { progressMsg -> 
                 addLog(progressMsg) 
             }
