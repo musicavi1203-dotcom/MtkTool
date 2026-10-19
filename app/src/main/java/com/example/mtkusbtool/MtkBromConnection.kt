@@ -39,7 +39,7 @@ object MtkBromConnection {
         val resp = ByteArray(1)
         fun readAck(): Byte? = if (connection.bulkTransfer(epIn, resp, 1, 2000) > 0) resp[0] else null
 
-        // 1. לחיצת יד (חכם - מתאים את עצמו למצב)
+        // 1. לחיצת יד חכמה (מזהה אם זה BROM או Preloader)
         val isBrom = device.productId == 0x0003 || device.productId == 0x0001
         val handshakeCmd = if (isBrom) 0xA0.toByte() else 0xA1.toByte()
         
@@ -52,7 +52,7 @@ object MtkBromConnection {
             return "שגיאה בלחיצת יד: ${hs?.let { String.format(Locale.US, "0x%02X", it) } ?: "אין תגובה"}"
         }
 
-        // 2. שליחת ה-DA
+        // 2. שליחת ה-DA (הקטן)
         onProgress("מכין לשלוח DA (${daBytes.size} בייט)...")
         
         connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000)
