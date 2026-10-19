@@ -10,7 +10,6 @@ import java.util.Locale
 
 object MtkBromConnection {
 
-    // שליחת ה-DA ישירות (מתאים ל-Preloader)
     fun sendDaToPreloader(
         usbManager: UsbManager, 
         device: UsbDevice,
@@ -40,9 +39,13 @@ object MtkBromConnection {
         val resp = ByteArray(1)
         fun readAck(): Byte? = if (connection.bulkTransfer(epIn, resp, 1, 2000) > 0) resp[0] else null
 
-        // 1. לחיצת יד (Preloader)
-        onProgress("שולח לחיצת יד (Preloader)...")
-        connection.bulkTransfer(epOut, byteArrayOf(0xA1.toByte()), 1, 1000)
+        // 1. לחיצת יד (חכם - מתאים את עצמו למצב)
+        val isBrom = device.productId == 0x0003 || device.productId == 0x0001
+        val handshakeCmd = if (isBrom) 0xA0.toByte() else 0xA1.toByte()
+        
+        onProgress("שולח לחיצת יד (${if (isBrom) "BROM" else "Preloader"})...")
+        connection.bulkTransfer(epOut, byteArrayOf(handshakeCmd), 1, 1000)
+        
         val hs = readAck()
         if (hs != 0x5F.toByte() && hs != 0xC0.toByte()) {
             connection.close()
@@ -52,7 +55,6 @@ object MtkBromConnection {
         // 2. שליחת ה-DA
         onProgress("מכין לשלוח DA (${daBytes.size} בייט)...")
         
-        // פקודת Send DA
         connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000)
         val ack1 = readAck()
         if (ack1 != 0xD8.toByte()) {
@@ -60,7 +62,6 @@ object MtkBromConnection {
             return "שגיאה: תגובת 0xD7 לא תקינה (${ack1?.let { String.format(Locale.US, "0x%02X", it) } ?: "אין"})"
         }
 
-        // שליחת גודל
         val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
         connection.bulkTransfer(epOut, sizeBytes, 4, 2000)
         val ack2 = readAck()
@@ -69,7 +70,6 @@ object MtkBromConnection {
             return "שגיאה: תגובת גודל לא תקינה (${ack2?.let { String.format(Locale.US, "0x%02X", it) } ?: "אין"})"
         }
 
-        // שליחת הנתונים
         var offset = 0
         val chunkSize = 512
         while (offset < daBytes.size) {
@@ -90,7 +90,6 @@ object MtkBromConnection {
             }
         }
 
-        // 3. הרצת ה-DA
         onProgress("מריץ DA...")
         connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000)
         readAck()
