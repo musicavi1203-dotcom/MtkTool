@@ -10,22 +10,33 @@
         android:id="@+id/tvStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/status_waiting"
-        android:textSize="18sp"
+        android:text="ממתין..."
+        android:textSize="16sp"
         android:textStyle="bold" />
-
-    <Button
-        android:id="@+id/btnRequestPermission"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="@string/btn_request_permission" />
 
     <Button
         android:id="@+id/btnHandshake"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:enabled="false"
-        android:text="@string/btn_handshake" />
+        android:text="התחל תהליך" />
+
+    <!-- קופסת הלוג - כאן נצבור את כל ההודעות -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="16dp"
+        android:background="#1E1E1E"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/tvLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#00FF00"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:text="--- לוג מערכת ---\n" />
+    </ScrollView>
 </LinearLayout>
