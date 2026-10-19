@@ -2,9 +2,9 @@ package com.example.mtkusbtool
 
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
-import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
+import android.hardware.usb.UsbRequest
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
@@ -36,7 +36,31 @@ object MtkBromConnection {
         return true
     }
 
-    // פונקציית הפריצה החדשה (עם Control Transfer ל-Payload)
+    // ניסיון שליחה עם UsbRequest אסינכרוני (עוקף חסימות)
+    private fun sendControlTransferAsync(connection: android.hardware.usb.UsbDeviceConnection, payload: ByteArray): Boolean {
+        return try {
+            val request = UsbRequest()
+            if (!request.initialize(connection, UsbEndpoint(UsbConstants.USB_DIR_OUT, UsbConstants.USB_ENDPOINT_XFER_CONTROL, 0))) {
+                return false
+            }
+            val buffer = ByteBuffer.wrap(payload)
+            request.queue(buffer, payload.size)
+            
+            // מחכים לתשובה
+            val response = connection.requestWait()
+            if (response == request) {
+                request.close()
+                true
+            } else {
+                request.close()
+                false
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // פונקציית הפריצה החדשה (מנסה גם 0x40 וגם UsbRequest)
     fun executeBypassAndSendDa(
         usbManager: UsbManager, 
         device: UsbDevice,
@@ -67,7 +91,7 @@ object MtkBromConnection {
         val resp = ByteArray(1)
         fun readAck(): Byte? = if (connection.bulkTransfer(epIn, resp, 1, 2000) > 0) resp[0] else null
 
-        // 1. לחיצת יד (מנסים את שתי האפשרויות)
+        // 1. לחיצת יד
         onProgress("מבצע לחיצת יד...")
         connection.bulkTransfer(epOut, byteArrayOf(0xA0.toByte()), 1, 1000)
         var hs = readAck()
@@ -79,29 +103,30 @@ object MtkBromConnection {
             }
         }
 
-        // 2. שליחת ה-Payload דרך Control Transfer!
-        onProgress("שולח Payload (Control Transfer)...")
+        // 2. שליחת ה-Payload - ניסיון 1: Control Transfer עם 0x40 (Vendor Request)
+        onProgress("שולח Payload (ניסיון 1: 0x40)...")
+        var ctrlResult = connection.controlTransfer(0x40, 0x20, 0, 0, payloadBytes, payloadBytes.size, 5000)
         
-        // הפקודה הקסומה של mtkclient: requestType = 0x21, request = 0x20
-        val ctrlResult = connection.controlTransfer(
-            0x21, // requestType (Host to Device, Vendor, Class)
-            0x20, // request (0x20 - Send DA / Payload)
-            0,    // value
-            0,    // index
-            payloadBytes, // הנתונים
-            payloadBytes.size, // אורך
-            5000  // timeout
-        )
-
+        // אם נכשל, ננסה את 0x21 (Class Request)
         if (ctrlResult < 0) {
-            connection.close()
-            return "שגיאה: שליחת ה-Payload נכשלה (Control Transfer נחסם)."
+            onProgress("ניסיון 2 (0x21)...")
+            ctrlResult = connection.controlTransfer(0x21, 0x20, 0, 0, payloadBytes, payloadBytes.size, 5000)
         }
 
-        // 3. הרצת ה-Payload (אם צריך, לרוב ה-Control Transfer כבר מפעיל אותו)
-        onProgress("Payload נשלח בהצלחה! מכין DA...")
+        // אם עדיין נכשל, ננסה את ה-UsbRequest האסינכרוני
+        if (ctrlResult < 0) {
+            onProgress("ניסיון 3 (UsbRequest)...")
+            val asyncSuccess = sendControlTransferAsync(connection, payloadBytes)
+            if (!asyncSuccess) {
+                connection.close()
+                return "שגיאה: כל שיטות ה-Payload נכשלו (אנדרואיד חוסמת)."
+            }
+        }
+
+        // 3. הרצת ה-Payload
+        onProgress("Payload נשלח! מכין DA...")
         
-        // 4. שליחת ה-DA (זה עובד ב-Bulk Transfer רגיל)
+        // 4. שליחת ה-DA (Bulk Transfer רגיל)
         onProgress("מכין לשלוח DA...")
         connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000)
         if (readAck() != 0xD8.toByte()) { connection.close(); return "שגיאה: תגובה לא תקינה ל-0xD7." }
