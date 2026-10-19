@@ -32,10 +32,10 @@ class MainActivity : AppCompatActivity() {
                     if (device != null && device.vendorId == 0x0E8D) {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         if (waitingForBrom) {
-                            tvStatus.text = "מכשיר חזר (PID: $pidStr). ממתין 1 שנייה..."
+                            tvStatus.text = "מכשיר חזר (PID: $pidStr). ממתין 1.5 שניות..."
                             waitingForBrom = false
                             Thread {
-                                Thread.sleep(1000) // השהיה קצרה יותר
+                                Thread.sleep(1500)
                                 runOnUiThread { requestPermissionFast(device) }
                             }.start()
                         } else {
@@ -53,11 +53,7 @@ class MainActivity : AppCompatActivity() {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
                         val isBrom = device.productId == 0x0003 || device.productId == 0x0001
-                        if (isBrom) {
-                            executeBypassFlow(device)
-                        } else {
-                            crashAndWait()
-                        }
+                        if (isBrom) executeBypassFlow(device) else crashAndWait()
                     } else {
                         tvStatus.text = "הרשאה נדחתה."
                     }
