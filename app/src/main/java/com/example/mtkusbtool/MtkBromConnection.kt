@@ -4,7 +4,6 @@ import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
-import android.hardware.usb.UsbRequest
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
@@ -36,31 +35,7 @@ object MtkBromConnection {
         return true
     }
 
-    // ניסיון שליחה עם UsbRequest אסינכרוני (עוקף חסימות)
-    private fun sendControlTransferAsync(connection: android.hardware.usb.UsbDeviceConnection, payload: ByteArray): Boolean {
-        return try {
-            val request = UsbRequest()
-            if (!request.initialize(connection, UsbEndpoint(UsbConstants.USB_DIR_OUT, UsbConstants.USB_ENDPOINT_XFER_CONTROL, 0))) {
-                return false
-            }
-            val buffer = ByteBuffer.wrap(payload)
-            request.queue(buffer, payload.size)
-            
-            // מחכים לתשובה
-            val response = connection.requestWait()
-            if (response == request) {
-                request.close()
-                true
-            } else {
-                request.close()
-                false
-            }
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    // פונקציית הפריצה החדשה (מנסה גם 0x40 וגם UsbRequest)
+    // פונקציית הפריצה (עם Control Transfer סינכרוני)
     fun executeBypassAndSendDa(
         usbManager: UsbManager, 
         device: UsbDevice,
@@ -113,14 +88,10 @@ object MtkBromConnection {
             ctrlResult = connection.controlTransfer(0x21, 0x20, 0, 0, payloadBytes, payloadBytes.size, 5000)
         }
 
-        // אם עדיין נכשל, ננסה את ה-UsbRequest האסינכרוני
+        // אם עדיין נכשל, נעצור כאן
         if (ctrlResult < 0) {
-            onProgress("ניסיון 3 (UsbRequest)...")
-            val asyncSuccess = sendControlTransferAsync(connection, payloadBytes)
-            if (!asyncSuccess) {
-                connection.close()
-                return "שגיאה: כל שיטות ה-Payload נכשלו (אנדרואיד חוסמת)."
-            }
+            connection.close()
+            return "שגיאה: שליחת ה-Payload נכשלה (Control Transfer נחסם)."
         }
 
         // 3. הרצת ה-Payload
