@@ -35,7 +35,7 @@ object MtkBromConnection {
         return true
     }
 
-    // פונקציית הפריצה עם שליחת Payload בחלקים
+    // פונקציית הפריצה (שולחת Payload דרך Bulk Transfer!)
     fun executeBypassAndSendDa(
         usbManager: UsbManager, 
         device: UsbDevice,
@@ -78,68 +78,47 @@ object MtkBromConnection {
             }
         }
 
-        // 2. שליחת ה-Payload בחלקים קטנים!
-        onProgress("שולח Payload בחלקים (512 בייט)...")
-        val chunkSize = 512
-        var offset = 0
-        var payloadSent = true
+        // פונקציה פנימית לשליחת קבצים ב-Bulk
+        fun sendBinaryFile(fileName: String, fileBytes: ByteArray): String? {
+            onProgress("מכין לשלוח $fileName...")
+            connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000)
+            if (readAck() != 0xD8.toByte()) return "שגיאה: תגובה לא תקינה ל-0xD7."
 
-        while (offset < payloadBytes.size) {
-            val length = minOf(chunkSize, payloadBytes.size - offset)
-            val chunk = payloadBytes.copyOfRange(offset, offset + length)
-            
-            // ניסיון עם 0x40 (Vendor)
-            var result = connection.controlTransfer(0x40, 0x20, 0, 0, chunk, length, 2000)
-            
-            // אם נכשל, ננסה עם 0x21 (Class)
-            if (result < 0) {
-                result = connection.controlTransfer(0x21, 0x20, 0, 0, chunk, length, 2000)
-            }
+            val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(fileBytes.size).array()
+            connection.bulkTransfer(epOut, sizeBytes, 4, 2000)
+            if (readAck() != 0xD9.toByte()) return "שגיאה: תגובה לא תקינה לגודל."
 
-            if (result < 0) {
-                payloadSent = false
-                break
+            var offset = 0
+            val chunkSize = 512
+            while (offset < fileBytes.size) {
+                val length = minOf(chunkSize, fileBytes.size - offset)
+                val chunk = fileBytes.copyOfRange(offset, offset + length)
+                if (connection.bulkTransfer(epOut, chunk, length, 2000) < 0) return "שגיאה: שליחת נתונים נכשלה ב-$offset."
+                val ack = readAck()
+                if (ack != 0x5A.toByte() && ack != 0x5F.toByte()) return "שגיאה: תגובה לא תקינה לנתונים ($ack)."
+                offset += length
+                onProgress("שולח $fileName... ${(offset * 100) / fileBytes.size}%")
             }
-
-            offset += length
-            if (offset % (chunkSize * 10) == 0) {
-                onProgress("שולח Payload... ${(offset * 100) / payloadBytes.size}%")
-            }
+            return null // Success
         }
 
-        if (!payloadSent) {
-            connection.close()
-            return "שגיאה: שליחת ה-Payload נכשלה (Control Transfer נחסם)."
-        }
+        // 2. שליחת ה-Payload ב-Bulk Transfer!
+        sendBinaryFile("Payload", payloadBytes)?.let { connection.close(); return it }
 
-        onProgress("Payload נשלח בהצלחה! מכין DA...")
+        // 3. הרצת ה-Payload
+        onProgress("מריץ Payload...")
+        connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000)
+        readAck()
+        
+        // 4. שליחת ה-DA
+        sendBinaryFile("DA", daBytes)?.let { connection.close(); return it }
 
-        // 3. שליחת ה-DA (Bulk Transfer רגיל)
-        onProgress("מכין לשלוח DA...")
-        connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 2000)
-        if (readAck() != 0xD8.toByte()) { connection.close(); return "שגיאה: תגובה לא תקינה ל-0xD7." }
-
-        val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
-        connection.bulkTransfer(epOut, sizeBytes, 4, 2000)
-        if (readAck() != 0xD9.toByte()) { connection.close(); return "שגיאה: תגובה לא תקינה לגודל." }
-
-        var daOffset = 0
-        while (daOffset < daBytes.size) {
-            val length = minOf(chunkSize, daBytes.size - daOffset)
-            val chunk = daBytes.copyOfRange(daOffset, daOffset + length)
-            if (connection.bulkTransfer(epOut, chunk, length, 2000) < 0) { connection.close(); return "שגיאה: שליחת נתונים נכשלה ב-$daOffset." }
-            val ack = readAck()
-            if (ack != 0x5A.toByte() && ack != 0x5F.toByte()) { connection.close(); return "שגיאה: תגובה לא תקינה לנתונים." }
-            daOffset += length
-            onProgress("שולח DA... ${(daOffset * 100) / daBytes.size}%")
-        }
-
-        // 4. הרצת ה-DA
+        // 5. הרצת ה-DA
         onProgress("מריץ את ה-DA...")
         connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000)
         readAck()
         
         connection.close()
-        return "הצלחה מסחררת! המכשיר פרוץ!"
+        return "הצלחה מסחררת! ה-Payload עבד, ה-DA נשלח והורץ. המכשיר פרוץ!"
     }
 }
