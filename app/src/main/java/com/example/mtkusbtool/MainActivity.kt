@@ -78,8 +78,8 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                addLog("טוען DA...")
-                val daStream: InputStream = assets.open("DA_SWSEC.bin")
+                addLog("טוען DA קטן (1MB)...")
+                val daStream: InputStream = assets.open("MTK_AllInOne_DA.bin")
                 daBytes = daStream.readBytes()
                 daStream.close()
                 
