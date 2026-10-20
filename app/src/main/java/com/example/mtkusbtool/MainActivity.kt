@@ -20,9 +20,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
 
-    private var daBytes: ByteArray? = null
-    private var kamakiriDone = false
-    private var waitingForBrom = false
+    private var payloadBytes: ByteArray? = null
+    private var isRunning = false
 
     private fun addLog(message: String) {
         runOnUiThread {
@@ -40,29 +39,20 @@ class MainActivity : AppCompatActivity() {
                     if (device != null && device.vendorId == 0x0E8D) {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         addLog(">> מכשיר התחבר. PID: $pidStr")
-                        
-                        if (waitingForBrom && device.productId == 0x0003) {
-                            waitingForBrom = false
-                            addLog(">> זוהה BROM! מריץ Carbonara...")
-                            if (usbManager.hasPermission(device)) {
-                                executeCarbonara(device)
-                            } else {
-                                requestPermission(device, true)
-                            }
-                        } else if (!kamakiriDone) {
-                            requestPermission(device, false)
-                        }
+                        requestPermission(device)
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     addLog("<< מכשיר התנתק.")
+                    tvStatus.text = "המכשיר נותק."
+                    if (!isRunning) btnHandshake.isEnabled = true
                 }
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
-                        if (kamakiriDone || waitingForBrom) executeCarbonara(device)
-                        else executeKamakiri(device)
+                        addLog(">> הרשאה אושרה. מתחיל הרצה...")
+                        executeExploit(device)
                     } else {
                         addLog("!! הרשאה נדחתה.")
                     }
@@ -80,16 +70,19 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        tvStatus.text = "טוען DA..."
+        tvStatus.text = "טוען Payload..."
 
         Thread {
             try {
-                addLog("טוען MTK_AllInOne_DA.bin...")
-                assets.open("MTK_AllInOne_DA.bin").use { daBytes = it.readBytes() }
-                addLog("נטען בהצלחה (${daBytes?.size} בייט).")
-                runOnUiThread { tvStatus.text = "מוכן. ממתין למכשיר..."; btnHandshake.isEnabled = true }
+                addLog("טוען mt6761_payload.bin...")
+                assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
+                addLog("נטען בהצלחה (${payloadBytes?.size} בייט).")
+                runOnUiThread {
+                    tvStatus.text = "מוכן. חבר את המכשיר (כבוי)."
+                    btnHandshake.isEnabled = true
+                }
             } catch (e: Exception) {
-                addLog("!! שגיאה: ${e.message}")
+                addLog("!! שגיאה בטעינה: ${e.message}")
                 runOnUiThread { tvStatus.text = "שגיאת קבצים." }
             }
         }.start()
@@ -106,58 +99,63 @@ class MainActivity : AppCompatActivity() {
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 if (usbManager.hasPermission(device)) {
-                    if (kamakiriDone) executeCarbonara(device) else executeKamakiri(device)
-                } else requestPermission(device, kamakiriDone)
-            } else addLog("!! לא נמצא מכשיר.")
+                    executeExploit(device)
+                } else {
+                    requestPermission(device)
+                }
+            } else {
+                addLog("!! לא נמצא מכשיר MediaTek. חבר אותו תחילה.")
+            }
         }
     }
 
-    private fun requestPermission(device: UsbDevice, isDaPhase: Boolean) {
+    private fun requestPermission(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
-            if (isDaPhase) executeCarbonara(device) else executeKamakiri(device)
+            executeExploit(device)
             return
         }
-        addLog("מבקש הרשאה...")
+        addLog("מבקש הרשאת USB...")
         val intent = Intent(ACTION_USB_PERMISSION)
         val pi = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_MUTABLE)
         usbManager.requestPermission(device, pi)
     }
 
-    private fun executeKamakiri(device: UsbDevice) {
-        tvStatus.text = "מריץ Kamakiri..."
-        addLog("=== שלב א': Kamakiri ===")
+    private fun executeExploit(device: UsbDevice) {
+        val pBytes = payloadBytes
+        if (pBytes == null) {
+            addLog("!! Payload לא נטען.")
+            return
+        }
+
+        if (isRunning) {
+            addLog("!! הרצה כבר פעילה.")
+            return
+        }
+
+        isRunning = true
+        tvStatus.text = "כותב Payload ל-RAM..."
+        addLog("=== מתחיל כתיבת Payload ל-RAM ===")
         btnHandshake.isEnabled = false
 
         Thread {
             try {
-                addLog("(Kamakiri יורץ מהגרסה הקודמת - בוא נדלג)")
+                val result = MtkBromConnection.runKamakiriViaWrite32(
+                    usbManager, device, pBytes
+                ) { progressMsg -> addLog(progressMsg) }
+
                 runOnUiThread {
-                    kamakiriDone = true
-                    waitingForBrom = true
-                    tvStatus.text = "מחכה ל-BROM..."
-                    addLog("ממתין ל-BROM...")
+                    addLog("== סיום: $result")
+                    tvStatus.text = result
+                    isRunning = false
+                    btnHandshake.isEnabled = true
                 }
             } catch (e: Exception) {
-                addLog("!! שגיאה: ${e.message}")
-                runOnUiThread { btnHandshake.isEnabled = true }
-            }
-        }.start()
-    }
-
-    private fun executeCarbonara(device: UsbDevice) {
-        val dBytes = daBytes ?: return
-        tvStatus.text = "מריץ Carbonara..."
-        addLog("=== שלב ב': Carbonara ===")
-        btnHandshake.isEnabled = false
-
-        Thread {
-            val result = MtkBromConnection.runCarbonara(usbManager, device, dBytes) { addLog(it) }
-            runOnUiThread {
-                addLog("== סיום: $result")
-                tvStatus.text = result
-                btnHandshake.isEnabled = true
-                kamakiriDone = false
-                waitingForBrom = false
+                runOnUiThread {
+                    addLog("!! שגיאה קריטית: ${e.message}")
+                    tvStatus.text = "שגיאה: ${e.message}"
+                    isRunning = false
+                    btnHandshake.isEnabled = true
+                }
             }
         }.start()
     }
