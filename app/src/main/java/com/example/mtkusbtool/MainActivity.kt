@@ -80,17 +80,27 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        tvStatus.text = "טוען DA..."
+        tvStatus.text = "טוען קבצים..."
 
         Thread {
             try {
-                addLog("טוען MTK_AllInOne_DA.bin...")
-                assets.open("MTK_AllInOne_DA.bin").use { daBytes = it.readBytes() }
-                addLog("נטען בהצלחה (${daBytes?.size} בייט).")
-                runOnUiThread { tvStatus.text = "מוכן. ממתין למכשיר..."; btnHandshake.isEnabled = true }
+                val daFiles = listOf("MTK_AllInOne_DA.bin", "DA_SWSEC_CRYPTO20.bin", "DA_SWSEC.bin")
+                for (name in daFiles) {
+                    try {
+                        addLog("=== טוען $name ===")
+                        assets.open(name).use { 
+                            val bytes = it.readBytes()
+                            addLog("גודל: ${bytes.size} בייט")
+                            val analysis = MtkBromConnection.analyzeDa(bytes) { addLog(it) }
+                            addLog(analysis)
+                        }
+                    } catch (e: Exception) {
+                        addLog("!! לא ניתן לקרוא את $name: ${e.message}")
+                    }
+                }
+                runOnUiThread { tvStatus.text = "הניתוח הסתיים. ראה לוג." }
             } catch (e: Exception) {
-                addLog("!! שגיאה: ${e.message}")
-                runOnUiThread { tvStatus.text = "שגיאת קבצים." }
+                addLog("!! שגיאה כללית: ${e.message}")
             }
         }.start()
 
@@ -102,65 +112,15 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
 
         btnHandshake.setOnClickListener {
-            addLog("--- לחיצה ידנית ---")
-            val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
-            if (device != null) {
-                if (usbManager.hasPermission(device)) {
-                    if (kamakiriDone) executeCarbonara(device) else executeKamakiri(device)
-                } else requestPermission(device, kamakiriDone)
-            } else addLog("!! לא נמצא מכשיר.")
+            // כפתור לא בשימוש כרגע, הניתוח אוטומטי
+            addLog("--- לחיצה ידנית (אין פעולה כרגע) ---")
         }
     }
 
-    private fun requestPermission(device: UsbDevice, isDaPhase: Boolean) {
-        if (usbManager.hasPermission(device)) {
-            if (isDaPhase) executeCarbonara(device) else executeKamakiri(device)
-            return
-        }
-        addLog("מבקש הרשאה...")
-        val intent = Intent(ACTION_USB_PERMISSION)
-        val pi = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_MUTABLE)
-        usbManager.requestPermission(device, pi)
-    }
-
-    private fun executeKamakiri(device: UsbDevice) {
-        tvStatus.text = "מריץ Kamakiri..."
-        addLog("=== שלב א': Kamakiri ===")
-        btnHandshake.isEnabled = false
-
-        Thread {
-            try {
-                addLog("(Kamakiri יורץ מהגרסה הקודמת - בוא נדלג)")
-                runOnUiThread {
-                    kamakiriDone = true
-                    waitingForBrom = true
-                    tvStatus.text = "מחכה ל-BROM..."
-                    addLog("ממתין ל-BROM...")
-                }
-            } catch (e: Exception) {
-                addLog("!! שגיאה: ${e.message}")
-                runOnUiThread { btnHandshake.isEnabled = true }
-            }
-        }.start()
-    }
-
-    private fun executeCarbonara(device: UsbDevice) {
-        val dBytes = daBytes ?: return
-        tvStatus.text = "מריץ Carbonara..."
-        addLog("=== שלב ב': Carbonara ===")
-        btnHandshake.isEnabled = false
-
-        Thread {
-            val result = MtkBromConnection.runCarbonara(usbManager, device, dBytes) { addLog(it) }
-            runOnUiThread {
-                addLog("== סיום: $result")
-                tvStatus.text = result
-                btnHandshake.isEnabled = true
-                kamakiriDone = false
-                waitingForBrom = false
-            }
-        }.start()
-    }
+    // פונקציות אלו לא בשימוש כרגע, אבל משאירים אותן כדי שהקוד יעבור קומפילציה
+    private fun requestPermission(device: UsbDevice, isDaPhase: Boolean) {}
+    private fun executeKamakiri(device: UsbDevice) {}
+    private fun executeCarbonara(device: UsbDevice) {}
 
     override fun onDestroy() {
         super.onDestroy()
