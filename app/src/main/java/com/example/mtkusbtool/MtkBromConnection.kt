@@ -1,8 +1,6 @@
 package com.example.mtkusbtool
 
-import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
-import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -42,7 +40,7 @@ object MtkBromConnection {
         return -1
     }
 
-    // פונקציה לפרסור קובץ ה-DA לפי המבנה של MediaTek
+    // פונקציה חדשה לפרסור חכם - סורקת אחרי 0xdada
     fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
         if (data.size < 0x6C) {
             onProgress("!! DA קטן מדי (${data.size} בייט)")
@@ -57,11 +55,18 @@ object MtkBromConnection {
         }
         onProgress("נמצאה מחרוזת MTK_DOWNLOAD_AGENT")
 
-        // מעבר על כל רשומות השבבים (DA Entries)
-        // כל רשומה מתחילה ב-0x6C, וגודלה 20 בייטים + 20 בייטים לכל אזור
-        var offset = 0x6C
-        while (offset + 20 <= data.size) {
-            val buf = ByteBuffer.wrap(data, offset, 20).order(ByteOrder.LITTLE_ENDIAN)
+        // סריקה אחרי כל מופע של 0xdada
+        val magicBytes = byteArrayOf(0xda.toByte(), 0xda.toByte())
+        var searchOffset = 0
+        var foundCount = 0
+
+        while (searchOffset < data.size - 20) {
+            val idx = indexOf(data.copyOfRange(searchOffset, data.size), magicBytes)
+            if (idx == -1) break
+            val magicOffset = searchOffset + idx
+
+            // קריאת 20 הבייטים של הרשומה
+            val buf = ByteBuffer.wrap(data, magicOffset, 20).order(ByteOrder.LITTLE_ENDIAN)
             val magic = buf.short.toInt() and 0xFFFF
             val hwCode = buf.short.toInt() and 0xFFFF
             val hwSubCode = buf.short.toInt() and 0xFFFF
@@ -73,13 +78,10 @@ object MtkBromConnection {
             val entryRegionIndex = buf.short.toInt() and 0xFFFF
             val entryRegionCount = buf.short.toInt() and 0xFFFF
 
-            onProgress("DA Entry: magic=0x${Integer.toHexString(magic)}, hwCode=0x${Integer.toHexString(hwCode)}, regions=$entryRegionCount")
-
-            // אם מצאנו את השבב שלנו (MT6761)
             if (hwCode == 0x717) {
-                onProgress("מצאתי את MT6761 (hwCode 0x717)! מפרסר אזורים...")
+                onProgress("מצאתי את MT6761 (hwCode 0x717) ב-offset 0x${Integer.toHexString(magicOffset)}!")
                 val regions = mutableListOf<DaRegion>()
-                var regionOffset = offset + 20
+                var regionOffset = magicOffset + 20
                 for (i in 0 until entryRegionCount) {
                     if (regionOffset + 20 > data.size) break
                     val rb = ByteBuffer.wrap(data, regionOffset, 20).order(ByteOrder.LITTLE_ENDIAN)
@@ -104,12 +106,7 @@ object MtkBromConnection {
                 }
             }
 
-            // דילוג לרשומת השבב הבאה
-            var skip = 20
-            for (i in 0 until entryRegionCount) {
-                skip += 20
-            }
-            offset += skip
+            searchOffset = magicOffset + 2 // ממשיכים לחפש הלאה
         }
 
         onProgress("!! לא נמצאה רשומה לשבב 0x717 (MT6761) בקובץ")
