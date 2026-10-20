@@ -37,37 +37,38 @@ object MtkBromConnection {
         if (magicOffset == -1) { onProgress("!! לא נמצא MTK_DOWNLOAD_AGENT"); return null }
         onProgress("נמצאה מחרוזת MTK_DOWNLOAD_AGENT ב-offset 0x${Integer.toHexString(magicOffset)}")
 
-        // חיפוש ה-hwcode 0x717 (MT6761) בכל הקובץ
-        val targetHwcode = 0x717
-        val targetBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(targetHwcode).array()
-        var hwcodeOffset = -1
-        outer@ for (i in 0..data.size - 4) {
-            for (j in 0..3) {
-                if (data[i + j] != targetBytes[j]) continue@outer
+        // חיפוש hwcode 0x717 (MT6761) או 0x766 (MT6765)
+        val targets = listOf(0x717, 0x766)
+        for (targetHwcode in targets) {
+            val targetBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(targetHwcode).array()
+            var hwcodeOffset = -1
+            outer@ for (i in 0..data.size - 4) {
+                for (j in 0..3) {
+                    if (data[i + j] != targetBytes[j]) continue@outer
+                }
+                hwcodeOffset = i
+                break
             }
-            hwcodeOffset = i
-            break
+            
+            if (hwcodeOffset != -1) {
+                onProgress("נמצא hwcode 0x${Integer.toHexString(targetHwcode)} ב-offset 0x${Integer.toHexString(hwcodeOffset)}")
+                
+                // הדפסת 128 בייטים סביב ה-hwcode
+                val start = maxOf(0, hwcodeOffset - 64)
+                val end = minOf(data.size, hwcodeOffset + 64)
+                val sb = StringBuilder()
+                for (i in start until end) {
+                    if (i == hwcodeOffset) sb.append(" >> ")
+                    sb.append(String.format(Locale.US, "%02X", data[i]))
+                    if ((i - start + 1) % 16 == 0 && i > start) sb.append("\n")
+                    else sb.append(" ")
+                }
+                onProgress("=== HEX סביב hwcode 0x${Integer.toHexString(targetHwcode)} ===\n$sb")
+                return null // עצירה כדי שנראה את ה-HEX
+            }
         }
-        
-        if (hwcodeOffset == -1) {
-            onProgress("!! לא נמצא hwcode 0x717 (MT6761) בקובץ")
-            return null
-        }
-        onProgress("נמצא hwcode 0x717 (MT6761) ב-offset 0x${Integer.toHexString(hwcodeOffset)}")
 
-        // הדפסת 128 בייטים סביב ה-hwcode (64 לפני, 64 אחרי)
-        val start = maxOf(0, hwcodeOffset - 64)
-        val end = minOf(data.size, hwcodeOffset + 64)
-        val sb = StringBuilder()
-        for (i in start until end) {
-            if (i == hwcodeOffset) sb.append(" >> ")
-            sb.append(String.format(Locale.US, "%02X", data[i]))
-            if ((i - start + 1) % 16 == 0 && i > start) sb.append("\n")
-            else sb.append(" ")
-        }
-        onProgress("=== HEX סביב hwcode 0x717 (offset 0x${Integer.toHexString(hwcodeOffset)}) ===\n$sb")
-
-        // עצירה כאן כדי שנראה את ה-HEX
+        onProgress("!! לא נמצא hwcode 0x717 או 0x766 בקובץ")
         return null
     }
 
