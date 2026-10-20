@@ -11,7 +11,6 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import java.io.InputStream
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
@@ -26,6 +25,7 @@ class MainActivity : AppCompatActivity() {
     private var currentDaIndex = 0
     private var kamakiriDone = false
     private var isPolling = false
+    private var waitingForBromAfterKamakiri = false
 
     private fun addLog(message: String) {
         runOnUiThread {
@@ -43,14 +43,16 @@ class MainActivity : AppCompatActivity() {
                     if (device != null && device.vendorId == 0x0E8D) {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         addLog(">> מכשיר התחבר. PID: $pidStr")
-                        if (kamakiriDone && device.productId == 0x0003) {
-                            addLog(">> זוהה BROM! מנסה DA...")
+                        
+                        if (waitingForBromAfterKamakiri && device.productId == 0x0003) {
+                            waitingForBromAfterKamakiri = false
+                            addLog(">> זוהה BROM! מנסה ctrl_transfer + DA...")
                             if (usbManager.hasPermission(device)) {
-                                tryNextDa(device)
+                                tryCtrlandDa(device)
                             } else {
                                 requestPermissionFast(device, true)
                             }
-                        } else if (!kamakiriDone) {
+                        } else if (!kamakiriDone && !waitingForBromAfterKamakiri) {
                             requestPermissionFast(device, false)
                         }
                     }
@@ -62,8 +64,9 @@ class MainActivity : AppCompatActivity() {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
-                        if (kamakiriDone) tryNextDa(device)
-                        else executeKamakiri(device)
+                        if (waitingForBromAfterKamakiri) tryCtrlandDa(device)
+                        else if (!kamakiriDone) executeKamakiri(device)
+                        else tryCtrlandDa(device)
                     } else {
                         addLog("!! הרשאה נדחתה.")
                     }
@@ -88,16 +91,11 @@ class MainActivity : AppCompatActivity() {
                 addLog("טוען Payload...")
                 assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
 
-                // רשימת קובצי DA - מהקטן לגדול
-                val daFiles = listOf(
-                    "MTK_AllInOne_DA.bin",
-                    "DA_SWSEC_CRYPTO20.bin",
-                    "DA_SWSEC.bin"
-                )
+                val daFiles = listOf("MTK_AllInOne_DA.bin", "DA_SWSEC_CRYPTO20.bin", "DA_SWSEC.bin")
                 val loaded = mutableListOf<Pair<String, ByteArray>>()
                 for (name in daFiles) {
                     try {
-                        assets.open(name).use { 
+                        assets.open(name).use {
                             val bytes = it.readBytes()
                             loaded.add(name to bytes)
                             addLog("נטען $name (${bytes.size} בייט)")
@@ -107,12 +105,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 daList = loaded
-
-                if (daList.isEmpty()) {
-                    addLog("!! אין קובצי DA זמינים.")
-                } else {
-                    addLog("נטענו ${daList.size} קובצי DA. סדר: ${daList.map { it.first }}")
-                }
+                addLog("נטענו ${daList.size} קובצי DA.")
                 runOnUiThread { tvStatus.text = "מוכן. ממתין למכשיר..."; btnHandshake.isEnabled = true }
             } catch (e: Exception) {
                 addLog("!! שגיאה בטעינה: ${e.message}")
@@ -132,7 +125,7 @@ class MainActivity : AppCompatActivity() {
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 if (usbManager.hasPermission(device)) {
-                    if (kamakiriDone) tryNextDa(device) else executeKamakiri(device)
+                    if (kamakiriDone) tryCtrlandDa(device) else executeKamakiri(device)
                 } else requestPermissionFast(device, kamakiriDone)
             } else addLog("!! לא נמצא מכשיר.")
         }
@@ -140,7 +133,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermissionFast(device: UsbDevice, isDaPhase: Boolean) {
         if (usbManager.hasPermission(device)) {
-            if (isDaPhase) tryNextDa(device) else executeKamakiri(device)
+            if (isDaPhase) tryCtrlandDa(device) else executeKamakiri(device)
             return
         }
         addLog("מבקש הרשאה...")
@@ -152,17 +145,18 @@ class MainActivity : AppCompatActivity() {
     private fun executeKamakiri(device: UsbDevice) {
         val pBytes = payloadBytes ?: return
         tvStatus.text = "מריץ Kamakiri..."
-        addLog("מתחיל Kamakiri...")
+        addLog("מתחיל Kamakiri (בלי ctrl_transfer)...")
         btnHandshake.isEnabled = false
-        currentDaIndex = 0 // מאפס את האינדקס בכל ניסיון חדש
+        currentDaIndex = 0
 
         Thread {
-            val result = MtkBromConnection.runKamakiriOnly(usbManager, device, pBytes) { addLog(it) }
+            val result = MtkBromConnection.runKamakiriExploit(usbManager, device, pBytes) { addLog(it) }
             runOnUiThread {
                 if (result == "RECONNECT") {
                     kamakiriDone = true
-                    addLog("== Kamakiri הסתיים. מחפש BROM...")
-                    tvStatus.text = "מחפש BROM..."
+                    waitingForBromAfterKamakiri = true
+                    addLog("== Kamakiri הסתיים. מחכה ל-BROM...")
+                    tvStatus.text = "מחכה ל-BROM..."
                     startPollingForBrom()
                 } else {
                     addLog("== סיום: $result"); tvStatus.text = result; btnHandshake.isEnabled = true
@@ -184,8 +178,8 @@ class MainActivity : AppCompatActivity() {
                     found = true
                     isPolling = false
                     if (usbManager.hasPermission(device)) {
-                        addLog(">> לופ: מצאתי BROM! שולח DA...")
-                        runOnUiThread { tryNextDa(device) }
+                        addLog(">> לופ: מצאתי BROM! שולח ctrl_transfer + DA...")
+                        runOnUiThread { tryCtrlandDa(device) }
                     } else {
                         addLog(">> לופ: מצאתי BROM, מבקש הרשאה...")
                         runOnUiThread { requestPermissionFast(device, true) }
@@ -200,6 +194,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     addLog("!! לא נמצא BROM תוך 10 שניות.")
                     kamakiriDone = false
+                    waitingForBromAfterKamakiri = false
                     tvStatus.text = "לא נמצא BROM."
                     btnHandshake.isEnabled = true
                 }
@@ -207,11 +202,12 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun tryNextDa(device: UsbDevice) {
+    private fun tryCtrlandDa(device: UsbDevice) {
         if (currentDaIndex >= daList.size) {
             addLog("== כל ${daList.size} קובצי ה-DA נכשלו.")
             tvStatus.text = "כל קובצי ה-DA נכשלו."
             kamakiriDone = false
+            waitingForBromAfterKamakiri = false
             btnHandshake.isEnabled = true
             return
         }
@@ -219,27 +215,30 @@ class MainActivity : AppCompatActivity() {
         val (name, bytes) = daList[currentDaIndex]
         currentDaIndex++
         tvStatus.text = "מנסה $name..."
+        addLog(">> מנסה $name (${bytes.size} בייט) עם ctrl_transfer + DA...")
 
         Thread {
-            val result = MtkBromConnection.sendDaOnReconnect(usbManager, device, bytes, name) { addLog(it) }
+            val result = MtkBromConnection.sendCtrlandDa(usbManager, device, bytes, name) { addLog(it) }
             runOnUiThread {
                 addLog("== תוצאה עבור $name: $result")
                 if (result == "SUCCESS") {
                     addLog("🎉🎉🎉 הצלחה! הקובץ $name עבד!")
                     tvStatus.text = "הצלחה עם $name!"
                     kamakiriDone = false
+                    waitingForBromAfterKamakiri = false
                     btnHandshake.isEnabled = true
                 } else {
-                    // נכשל - ממתין ל-reconnect הבא ומנסה את הבא
                     if (currentDaIndex < daList.size) {
                         addLog(">> מחכה ל-reconnect הבא כדי לנסות את ${daList[currentDaIndex].first}...")
                         tvStatus.text = "ממתין לניסיון הבא..."
                         kamakiriDone = true
+                        waitingForBromAfterKamakiri = true
                         startPollingForBrom()
                     } else {
                         addLog("== נגמרו קובצי ה-DA.")
                         tvStatus.text = "כל קובצי ה-DA נכשלו."
                         kamakiriDone = false
+                        waitingForBromAfterKamakiri = false
                         btnHandshake.isEnabled = true
                     }
                 }
