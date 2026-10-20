@@ -21,7 +21,7 @@
         android:layout_marginTop="8dp"
         android:text="התחל תהליך" />
 
-    <!-- קופסת הלוג - כאן נצבור את כל ההודעות -->
+    <!-- קופסת הלוג - הוספנו textIsSelectable -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -37,6 +37,7 @@
             android:textColor="#00FF00"
             android:textSize="12sp"
             android:fontFamily="monospace"
+            android:textIsSelectable="true"
             android:text="--- לוג מערכת ---\n" />
     </ScrollView>
 </LinearLayout>
