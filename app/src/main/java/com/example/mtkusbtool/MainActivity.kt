@@ -84,8 +84,9 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                addLog("טוען DA_SWSEC_CRYPTO20.bin...")
-                assets.open("DA_SWSEC_CRYPTO20.bin").use { daBytes = it.readBytes() }
+                // שינוי שם הקובץ ל-DA_SWSEC.bin
+                addLog("טוען DA_SWSEC.bin...")
+                assets.open("DA_SWSEC.bin").use { daBytes = it.readBytes() }
                 addLog("נטען בהצלחה (${daBytes?.size} בייט).")
                 runOnUiThread { tvStatus.text = "מוכן. ממתין למכשיר..."; btnHandshake.isEnabled = true }
             } catch (e: Exception) {
@@ -130,11 +131,7 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                // קריאה לפונקציית Kamakiri (צריך להיות בקובץ MtkBromConnection)
-                // כאן אני מניח שהיא קיימת - אם לא, נצטרך להוסיף אותה חזרה
                 addLog("(Kamakiri יורץ מהגרסה הקודמת - בוא נדלג)")
-                // בינתיים, נדלג על Kamakiri ונריץ ישר Carbonara
-                // (הערה: זה לא יעבוד בלי Kamakiri, אבל זה שלד לבדיקה)
                 runOnUiThread {
                     kamakiriDone = true
                     waitingForBrom = true
