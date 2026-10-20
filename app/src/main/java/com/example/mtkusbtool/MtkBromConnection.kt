@@ -6,7 +6,6 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.security.MessageDigest
 import java.util.Locale
 
 object MtkBromConnection {
@@ -22,14 +21,10 @@ object MtkBromConnection {
         val da2Address: Long
     )
 
-    // פונקציה חדשה: סורקת את כל רשומות השבבים ומוצאת את 0x766
     private fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
-        if (data.size < 0x100) {
-            onProgress("!! DA קטן מדי")
-            return null
-        }
+        if (data.size < 0x100) return null
 
-        // מחרוזת החיפוש
+        // חיפוש המחרוזת MTK_DOWNLOAD_AGENT
         val magicString = "MTK_DOWNLOAD_AGENT".toByteArray()
         var magicOffset = -1
         outer@ for (i in 0..data.size - magicString.size) {
@@ -42,43 +37,37 @@ object MtkBromConnection {
         if (magicOffset == -1) { onProgress("!! לא נמצא MTK_DOWNLOAD_AGENT"); return null }
         onProgress("נמצאה מחרוזת MTK_DOWNLOAD_AGENT ב-offset 0x${Integer.toHexString(magicOffset)}")
 
-        // קריאת ה-header (0x70 ו-0x74)
-        val chipCount = ByteBuffer.wrap(data, 0x70, 4).order(ByteOrder.LITTLE_ENDIAN).int
-        val magic = ByteBuffer.wrap(data, 0x74, 4).order(ByteOrder.LITTLE_ENDIAN).int
-        
-        onProgress("Chip count: $chipCount, Magic: 0x${Integer.toHexString(magic)}")
-
-        // מעבר על כל רשומות השבבים (כל רשומה 28 בייטים, מתחיל ב-0x78)
-        for (i in 0 until chipCount) {
-            val entryOffset = 0x78 + i * 28
-            if (entryOffset + 28 > data.size) break
-            
-            val buf = ByteBuffer.wrap(data, entryOffset, 28).order(ByteOrder.LITTLE_ENDIAN)
-            val m_bbchip = buf.int
-            val m_da1_offset = buf.int
-            val m_da1_length = buf.int
-            val m_da1_addr = buf.int.toLong() and 0xFFFFFFFFL
-            val m_da2_offset = buf.int
-            val m_da2_length = buf.int
-            val m_da2_addr = buf.int.toLong() and 0xFFFFFFFFL
-            
-            onProgress("שבב $i: hwcode=0x${Integer.toHexString(m_bbchip)}, da1_off=0x${Integer.toHexString(m_da1_offset)}, da1_len=${m_da1_length}, da2_off=0x${Integer.toHexString(m_da2_offset)}, da2_len=${m_da2_length}")
-
-            // בדיקה אם זה השבב שלנו (0x766)
-            if (m_bbchip == 0x766) {
-                onProgress("מצאתי את השבב 0x766 (MT6761) ברשומה $i!")
-                
-                if (m_da1_offset + m_da1_length <= data.size && m_da2_offset + m_da2_length <= data.size) {
-                    val da1 = data.copyOfRange(m_da1_offset, m_da1_offset + m_da1_length)
-                    val da2 = data.copyOfRange(m_da2_offset, m_da2_offset + m_da2_length)
-                    return DaParts(da1, m_da1_offset, m_da1_length, m_da1_addr, da2, m_da2_offset, m_da2_length, m_da2_addr)
-                } else {
-                    onProgress("!! גדלים לא תקינים (da1 $m_da1_offset+$m_da1_length, da2 $m_da2_offset+$m_da2_length, total ${data.size})")
-                }
+        // חיפוש ה-hwcode 0x766 (MT6761) בכל הקובץ
+        val targetHwcode = 0x766
+        val targetBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(targetHwcode).array()
+        var hwcodeOffset = -1
+        outer@ for (i in 0..data.size - 4) {
+            for (j in 0..3) {
+                if (data[i + j] != targetBytes[j]) continue@outer
             }
+            hwcodeOffset = i
+            break
         }
+        
+        if (hwcodeOffset == -1) {
+            onProgress("!! לא נמצא hwcode 0x766 בקובץ")
+            return null
+        }
+        onProgress("נמצא hwcode 0x766 ב-offset 0x${Integer.toHexString(hwcodeOffset)}")
 
-        onProgress("!! לא נמצאה רשומה לשבב 0x766")
+        // הדפסת 128 בייטים סביב ה-hwcode (64 לפני, 64 אחרי)
+        val start = maxOf(0, hwcodeOffset - 64)
+        val end = minOf(data.size, hwcodeOffset + 64)
+        val sb = StringBuilder()
+        for (i in start until end) {
+            if (i == hwcodeOffset) sb.append(" >> ")
+            sb.append(String.format(Locale.US, "%02X", data[i]))
+            if ((i - start + 1) % 16 == 0 && i > start) sb.append("\n")
+            else sb.append(" ")
+        }
+        onProgress("=== HEX סביב hwcode 0x766 (offset 0x${Integer.toHexString(hwcodeOffset)}) ===\n$sb")
+
+        // עצירה כאן כדי שנראה את ה-HEX
         return null
     }
 
@@ -112,11 +101,10 @@ object MtkBromConnection {
         val parts = parseDa(daBytes, onProgress)
         if (parts == null) {
             connection.close()
-            return "שגיאה: פירוק ה-DA נכשל."
+            return "שגיאה: פירוק ה-DA נכשל (עצרנו כדי לראות את ה-HEX)."
         }
 
-        onProgress("DA1 size: ${parts.da1.size}, DA2 size: ${parts.da2.size}")
         connection.close()
-        return "הצלחה בפירוק! DA1 (${parts.da1.size} בייט), DA2 (${parts.da2.size} בייט)."
+        return "הצלחה בפירוק! DA1: ${parts.da1.size} בייט, DA2: ${parts.da2.size} בייט."
     }
 }
