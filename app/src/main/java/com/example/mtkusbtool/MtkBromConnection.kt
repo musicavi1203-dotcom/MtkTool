@@ -22,14 +22,14 @@ object MtkBromConnection {
         val da2Address: Long
     )
 
-    // פירוק ה-DA - גרסה חדשה שמחפשת את המחרוזת MTK_DOWNLOAD_AGENT
+    // פונקציה חדשה: סורקת את כל רשומות השבבים ומוצאת את 0x766
     private fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
-        if (data.size < 0x6C) {
-            onProgress("!! DA קטן מדי (${data.size} בייט)")
+        if (data.size < 0x100) {
+            onProgress("!! DA קטן מדי")
             return null
         }
 
-        // חיפוש המחרוזת MTK_DOWNLOAD_AGENT
+        // מחרוזת החיפוש
         val magicString = "MTK_DOWNLOAD_AGENT".toByteArray()
         var magicOffset = -1
         outer@ for (i in 0..data.size - magicString.size) {
@@ -39,54 +39,47 @@ object MtkBromConnection {
             magicOffset = i
             break
         }
-        
-        if (magicOffset == -1) {
-            onProgress("!! לא נמצאה המחרוזת MTK_DOWNLOAD_AGENT")
-            return null
-        }
-        onProgress("נמצאה המחרוזת MTK_DOWNLOAD_AGENT ב-offset 0x${Integer.toHexString(magicOffset)}")
+        if (magicOffset == -1) { onProgress("!! לא נמצא MTK_DOWNLOAD_AGENT"); return null }
+        onProgress("נמצאה מחרוזת MTK_DOWNLOAD_AGENT ב-offset 0x${Integer.toHexString(magicOffset)}")
 
-        // הדפסת 256 הבייטים הראשונים של הקובץ כ-HEX כדי שנוכל לפענח את המבנה
-        val dumpLen = minOf(256, data.size)
-        val sb = StringBuilder()
-        for (i in 0 until dumpLen) {
-            sb.append(String.format(Locale.US, "%02X", data[i]))
-            if ((i + 1) % 16 == 0) sb.append("\n") else sb.append(" ")
-        }
-        onProgress("=== HEX DUMP של 256 הבייטים הראשונים ===\n$sb")
+        // קריאת ה-header (0x70 ו-0x74)
+        val chipCount = ByteBuffer.wrap(data, 0x70, 4).order(ByteOrder.LITTLE_ENDIAN).int
+        val magic = ByteBuffer.wrap(data, 0x74, 4).order(ByteOrder.LITTLE_ENDIAN).int
         
-        // עצירה כאן - אנחנו רוצים לראות את ה-HEX לפני שנמשיך
+        onProgress("Chip count: $chipCount, Magic: 0x${Integer.toHexString(magic)}")
+
+        // מעבר על כל רשומות השבבים (כל רשומה 28 בייטים, מתחיל ב-0x78)
+        for (i in 0 until chipCount) {
+            val entryOffset = 0x78 + i * 28
+            if (entryOffset + 28 > data.size) break
+            
+            val buf = ByteBuffer.wrap(data, entryOffset, 28).order(ByteOrder.LITTLE_ENDIAN)
+            val m_bbchip = buf.int
+            val m_da1_offset = buf.int
+            val m_da1_length = buf.int
+            val m_da1_addr = buf.int.toLong() and 0xFFFFFFFFL
+            val m_da2_offset = buf.int
+            val m_da2_length = buf.int
+            val m_da2_addr = buf.int.toLong() and 0xFFFFFFFFL
+            
+            onProgress("שבב $i: hwcode=0x${Integer.toHexString(m_bbchip)}, da1_off=0x${Integer.toHexString(m_da1_offset)}, da1_len=${m_da1_length}, da2_off=0x${Integer.toHexString(m_da2_offset)}, da2_len=${m_da2_length}")
+
+            // בדיקה אם זה השבב שלנו (0x766)
+            if (m_bbchip == 0x766) {
+                onProgress("מצאתי את השבב 0x766 (MT6761) ברשומה $i!")
+                
+                if (m_da1_offset + m_da1_length <= data.size && m_da2_offset + m_da2_length <= data.size) {
+                    val da1 = data.copyOfRange(m_da1_offset, m_da1_offset + m_da1_length)
+                    val da2 = data.copyOfRange(m_da2_offset, m_da2_offset + m_da2_length)
+                    return DaParts(da1, m_da1_offset, m_da1_length, m_da1_addr, da2, m_da2_offset, m_da2_length, m_da2_addr)
+                } else {
+                    onProgress("!! גדלים לא תקינים (da1 $m_da1_offset+$m_da1_length, da2 $m_da2_offset+$m_da2_length, total ${data.size})")
+                }
+            }
+        }
+
+        onProgress("!! לא נמצאה רשומה לשבב 0x766")
         return null
-    }
-
-    // שליחת פקודת 0xD4 (WRITE32) עם כתובת ונתונים
-    private fun write32(connection: android.hardware.usb.UsbDeviceConnection, epOut: UsbEndpoint, epIn: UsbEndpoint, addr: Long, data: ByteArray): Boolean {
-        if (connection.bulkTransfer(epOut, byteArrayOf(0xD4.toByte()), 1, 2000) < 0) return false
-        val addrBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(addr.toInt()).array()
-        if (connection.bulkTransfer(epOut, addrBytes, 4, 2000) < 0) return false
-        val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(data.size / 4).array()
-        if (connection.bulkTransfer(epOut, sizeBytes, 4, 2000) < 0) return false
-        
-        val ack = ByteArray(1)
-        connection.bulkTransfer(epIn, ack, 1, 2000)
-        
-        var offset = 0
-        while (offset < data.size) {
-            val chunk = if (offset + 4 <= data.size) data.copyOfRange(offset, offset + 4) else byteArrayOf(0, 0, 0, 0)
-            if (connection.bulkTransfer(epOut, chunk, 4, 2000) < 0) return false
-            offset += 4
-        }
-        return true
-    }
-
-    // שליחת פקודת 0xD5 (JUMP_DA) עם כתובת
-    private fun jumpTo(connection: android.hardware.usb.UsbDeviceConnection, epOut: UsbEndpoint, epIn: UsbEndpoint, addr: Long): Boolean {
-        if (connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000) < 0) return false
-        val addrBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(addr.toInt()).array()
-        if (connection.bulkTransfer(epOut, addrBytes, 4, 2000) < 0) return false
-        val ack = ByteArray(2)
-        connection.bulkTransfer(epIn, ack, 2, 2000)
-        return true
     }
 
     fun runCarbonara(
@@ -119,10 +112,11 @@ object MtkBromConnection {
         val parts = parseDa(daBytes, onProgress)
         if (parts == null) {
             connection.close()
-            return "שגיאה: פירוק ה-DA נכשל (עצרנו כדי לראות את ה-HEX)."
+            return "שגיאה: פירוק ה-DA נכשל."
         }
 
+        onProgress("DA1 size: ${parts.da1.size}, DA2 size: ${parts.da2.size}")
         connection.close()
-        return "הצלחה בפירוק (לא אמור להגיע לכאן כרגע)"
+        return "הצלחה בפירוק! DA1 (${parts.da1.size} בייט), DA2 (${parts.da2.size} בייט)."
     }
 }
