@@ -84,9 +84,8 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                // שינוי שם הקובץ ל-DA_SWSEC.bin
-                addLog("טוען DA_SWSEC.bin...")
-                assets.open("DA_SWSEC.bin").use { daBytes = it.readBytes() }
+                addLog("טוען MTK_AllInOne_DA.bin...")
+                assets.open("MTK_AllInOne_DA.bin").use { daBytes = it.readBytes() }
                 addLog("נטען בהצלחה (${daBytes?.size} בייט).")
                 runOnUiThread { tvStatus.text = "מוכן. ממתין למכשיר..."; btnHandshake.isEnabled = true }
             } catch (e: Exception) {
