@@ -20,7 +20,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
 
-    private var payloadBytes: ByteArray? = null
+    private var daBytes: ByteArray? = null
     private var isRunning = false
 
     private fun addLog(message: String) {
@@ -51,7 +51,7 @@ class MainActivity : AppCompatActivity() {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
                         addLog(">> הרשאה אושרה.")
-                        executeExploit(device)
+                        executeParse(device)
                     } else {
                         addLog("!! הרשאה נדחתה.")
                     }
@@ -69,15 +69,15 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        tvStatus.text = "טוען Payload..."
+        tvStatus.text = "טוען DA..."
 
         Thread {
             try {
-                addLog("טוען mt6761_payload.bin...")
-                assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
-                addLog("נטען בהצלחה (${payloadBytes?.size} בייט).")
+                addLog("טוען MTK_AllInOne_DA.bin...")
+                assets.open("MTK_AllInOne_DA.bin").use { daBytes = it.readBytes() }
+                addLog("נטען בהצלחה (${daBytes?.size} בייט).")
                 runOnUiThread {
-                    tvStatus.text = "מוכן. חבר את המכשיר (כבוי)."
+                    tvStatus.text = "מוכן. חבר את המכשיר."
                     btnHandshake.isEnabled = true
                 }
             } catch (e: Exception) {
@@ -98,7 +98,7 @@ class MainActivity : AppCompatActivity() {
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 if (usbManager.hasPermission(device)) {
-                    executeExploit(device)
+                    executeParse(device)
                 } else {
                     requestPermission(device)
                 }
@@ -110,7 +110,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermission(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
-            executeExploit(device)
+            executeParse(device)
             return
         }
         addLog("מבקש הרשאת USB...")
@@ -119,21 +119,17 @@ class MainActivity : AppCompatActivity() {
         usbManager.requestPermission(device, pi)
     }
 
-    private fun executeExploit(device: UsbDevice) {
-        val pBytes = payloadBytes ?: return
-
+    private fun executeParse(device: UsbDevice) {
+        val dBytes = daBytes ?: return
         if (isRunning) return
 
         isRunning = true
-        tvStatus.text = "קורס Preloader..."
+        tvStatus.text = "מפרסר DA..."
         btnHandshake.isEnabled = false
 
         Thread {
             try {
-                val result = MtkBromConnection.runKamakiriViaWrite32(
-                    usbManager, device, pBytes
-                ) { progressMsg -> addLog(progressMsg) }
-
+                val result = MtkBromConnection.runCarbonara(usbManager, device, dBytes) { addLog(it) }
                 runOnUiThread {
                     addLog("== סיום: $result")
                     tvStatus.text = result
@@ -142,8 +138,8 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    addLog("!! שגיאה קריטית: ${e.message}")
-                    tvStatus.text = "שגיאה: ${e.message}"
+                    addLog("!! שגיאה: ${e.message}")
+                    tvStatus.text = "שגיאה."
                     isRunning = false
                     btnHandshake.isEnabled = true
                 }
