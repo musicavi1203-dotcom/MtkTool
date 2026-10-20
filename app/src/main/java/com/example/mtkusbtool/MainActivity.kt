@@ -44,14 +44,13 @@ class MainActivity : AppCompatActivity() {
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     addLog("<< מכשיר התנתק.")
-                    tvStatus.text = "המכשיר נותק."
                     if (!isRunning) btnHandshake.isEnabled = true
                 }
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
-                        addLog(">> הרשאה אושרה. מתחיל הרצה...")
+                        addLog(">> הרשאה אושרה.")
                         executeExploit(device)
                     } else {
                         addLog("!! הרשאה נדחתה.")
@@ -104,7 +103,7 @@ class MainActivity : AppCompatActivity() {
                     requestPermission(device)
                 }
             } else {
-                addLog("!! לא נמצא מכשיר MediaTek. חבר אותו תחילה.")
+                addLog("!! לא נמצא מכשיר MediaTek.")
             }
         }
     }
@@ -121,20 +120,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executeExploit(device: UsbDevice) {
-        val pBytes = payloadBytes
-        if (pBytes == null) {
-            addLog("!! Payload לא נטען.")
-            return
-        }
+        val pBytes = payloadBytes ?: return
 
-        if (isRunning) {
-            addLog("!! הרצה כבר פעילה.")
-            return
-        }
+        if (isRunning) return
 
         isRunning = true
-        tvStatus.text = "כותב Payload ל-RAM..."
-        addLog("=== מתחיל כתיבת Payload ל-RAM ===")
+        tvStatus.text = "קורס Preloader..."
         btnHandshake.isEnabled = false
 
         Thread {
