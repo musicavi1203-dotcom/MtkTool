@@ -37,25 +37,36 @@ object MtkBromConnection {
         if (magicOffset == -1) { onProgress("!! לא נמצא MTK_DOWNLOAD_AGENT"); return null }
         onProgress("נמצאה מחרוזת MTK_DOWNLOAD_AGENT ב-offset 0x${Integer.toHexString(magicOffset)}")
 
-        // חיפוש ה-hwcode 0x766 (MT6761) בכל הקובץ
-        val targetHwcode = 0x766
-        val targetBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(targetHwcode).array()
+        // חיפוש 0x766 בפורמט Little Endian
+        val targetLE = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(0x766).array()
         var hwcodeOffset = -1
         outer@ for (i in 0..data.size - 4) {
             for (j in 0..3) {
-                if (data[i + j] != targetBytes[j]) continue@outer
+                if (data[i + j] != targetLE[j]) continue@outer
             }
             hwcodeOffset = i
             break
         }
         
+        // אם לא נמצא LE, ננסה BE
         if (hwcodeOffset == -1) {
-            onProgress("!! לא נמצא hwcode 0x766 בקובץ")
+            val targetBE = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(0x766).array()
+            outer@ for (i in 0..data.size - 4) {
+                for (j in 0..3) {
+                    if (data[i + j] != targetBE[j]) continue@outer
+                }
+                hwcodeOffset = i
+                break
+            }
+        }
+
+        if (hwcodeOffset == -1) {
+            onProgress("!! לא נמצא hwcode 0x766 בקובץ (לא LE ולא BE)")
             return null
         }
         onProgress("נמצא hwcode 0x766 ב-offset 0x${Integer.toHexString(hwcodeOffset)}")
 
-        // הדפסת 128 בייטים סביב ה-hwcode (64 לפני, 64 אחרי)
+        // הדפסת 128 בייטים סביב ה-hwcode
         val start = maxOf(0, hwcodeOffset - 64)
         val end = minOf(data.size, hwcodeOffset + 64)
         val sb = StringBuilder()
@@ -65,10 +76,9 @@ object MtkBromConnection {
             if ((i - start + 1) % 16 == 0 && i > start) sb.append("\n")
             else sb.append(" ")
         }
-        onProgress("=== HEX סביב hwcode 0x766 (offset 0x${Integer.toHexString(hwcodeOffset)}) ===\n$sb")
+        onProgress("=== HEX סביב hwcode 0x766 ===\n$sb")
 
-        // עצירה כאן כדי שנראה את ה-HEX
-        return null
+        return null // עצירה כדי לראות את ה-HEX
     }
 
     fun runCarbonara(
@@ -105,6 +115,6 @@ object MtkBromConnection {
         }
 
         connection.close()
-        return "הצלחה בפירוק! DA1: ${parts.da1.size} בייט, DA2: ${parts.da2.size} בייט."
+        return "הצלחה בפירוק!"
     }
 }
