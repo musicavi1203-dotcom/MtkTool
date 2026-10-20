@@ -66,24 +66,27 @@ object MtkBromConnection {
         
         // המתנה ל-BROM
         onProgress("ממתין ל-BROM (0x0003)...")
-        var bromDevice: UsbDevice? = null
+        var foundBrom: UsbDevice? = null
         for (i in 0 until 100) {
-            bromDevice = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D && it.productId == 0x0003 }
-            if (bromDevice != null) break
+            foundBrom = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D && it.productId == 0x0003 }
+            if (foundBrom != null) break
             Thread.sleep(100)
         }
         
-        if (bromDevice == null) {
+        if (foundBrom == null) {
             return "שגיאה: לא הצלחנו להגיע ל-BROM."
         }
+        
+        // שמירה במשתנה לא-נוללי
+        val bd: UsbDevice = foundBrom
         onProgress("מצאנו BROM! מתחיל כתיבת Payload...")
 
-        val connection = usbManager.openDevice(bromDevice) ?: return "שגיאה: פתיחת חיבור נכשלה."
+        val connection = usbManager.openDevice(bd) ?: return "שגיאה: פתיחת חיבור נכשלה."
 
         var epIn: UsbEndpoint? = null
         var epOut: UsbEndpoint? = null
-        for (i in 0 until bromDevice.interfaceCount) {
-            val usbInterface = bromDevice.getInterface(i)
+        for (i in 0 until bd.interfaceCount) {
+            val usbInterface = bd.getInterface(i)
             if (connection.claimInterface(usbInterface, true)) {
                 for (j in 0 until usbInterface.endpointCount) {
                     val ep = usbInterface.getEndpoint(j)
