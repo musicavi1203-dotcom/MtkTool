@@ -1,154 +1,104 @@
 package com.example.mtkusbtool
 
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
-import android.os.Bundle
-import android.widget.Button
-import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Locale
 
-class MainActivity : AppCompatActivity() {
-    private lateinit var usbManager: UsbManager
-    private lateinit var tvStatus: TextView
-    private lateinit var tvLog: TextView
-    private lateinit var btnHandshake: Button
-    private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
+object MtkBromConnection {
 
-    private var daBytes: ByteArray? = null
-    private var isRunning = false
+    // מבנה הרשומה של כל אזור (EntryRegion) בקובץ ה-DA
+    data class DaRegion(
+        val buf: Int,
+        val len: Int,
+        val addr: Long,
+        val offset: Int,
+        val sigLen: Int
+    )
 
-    private fun addLog(message: String) {
-        runOnUiThread {
-            tvLog.append("$message\n")
-            val scrollView = tvLog.parent as android.view.View
-            scrollView.post { scrollView.scrollTo(0, scrollView.bottom) }
-        }
-    }
+    data class DaParts(
+        val da1: ByteArray,
+        val da1Offset: Int,
+        val da1Size: Int,
+        val da1Address: Long,
+        val da2: ByteArray,
+        val da2Offset: Int,
+        val da2Size: Int,
+        val da2Address: Long
+    )
 
-    private val usbReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                    if (device != null && device.vendorId == 0x0E8D) {
-                        val pidStr = String.format(Locale.US, "0x%04X", device.productId)
-                        addLog(">> מכשיר התחבר. PID: $pidStr")
-                        requestPermission(device)
-                    }
-                }
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    addLog("<< מכשיר התנתק.")
-                    if (!isRunning) btnHandshake.isEnabled = true
-                }
-                ACTION_USB_PERMISSION -> {
-                    val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    if (granted && device != null) {
-                        addLog(">> הרשאה אושרה.")
-                        executeParse(device)
-                    } else {
-                        addLog("!! הרשאה נדחתה.")
-                    }
-                }
+    // פונקציית עזר לחיפוש מערך בתוך מערך
+    private fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
+        if (needle.isEmpty() || haystack.size < needle.size) return -1
+        outer@ for (i in 0..haystack.size - needle.size) {
+            for (j in needle.indices) {
+                if (haystack[i + j] != needle[j]) continue@outer
             }
+            return i
         }
+        return -1
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+    // פונקציה חדשה לפרסור - מחפשת את ה-hwcode ומדפיסה HEX
+    fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
+        if (data.size < 0x6C) return null
 
-        usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-        tvStatus = findViewById(R.id.tvStatus)
-        tvLog = findViewById(R.id.tvLog)
-        btnHandshake = findViewById(R.id.btnHandshake)
-        btnHandshake.isEnabled = false
-        tvStatus.text = "טוען DA..."
+        // חיפוש הרצף של ה-hwcode 0x717 (Little Endian: 17 07 00 00)
+        val targetHwCodeBytes = byteArrayOf(0x17, 0x07, 0x00, 0x00)
+        var searchOffset = 0
+        var foundCount = 0
 
-        Thread {
-            try {
-                addLog("טוען MT6761.bin...")
-                assets.open("MT6761.bin").use { daBytes = it.readBytes() }
-                addLog("נטען בהצלחה (${daBytes?.size} בייט).")
-                runOnUiThread {
-                    tvStatus.text = "מוכן. חבר את המכשיר."
-                    btnHandshake.isEnabled = true
-                }
-            } catch (e: Exception) {
-                addLog("!! שגיאה בטעינה: ${e.message}")
-                runOnUiThread { tvStatus.text = "שגיאת קבצים." }
+        while (searchOffset < data.size - 4) {
+            val idx = indexOf(data.copyOfRange(searchOffset, data.size), targetHwCodeBytes)
+            if (idx == -1) break
+            val hwCodeOffset = searchOffset + idx
+            foundCount++
+
+            onProgress("נמצא hwcode 0x717 ב-offset 0x${Integer.toHexString(hwCodeOffset)}")
+            
+            // הדפסת 64 בייטים לפני ו-64 בייטים אחרי
+            val start = maxOf(0, hwCodeOffset - 64)
+            val end = minOf(data.size, hwCodeOffset + 64)
+            val sb = StringBuilder()
+            for (i in start until end) {
+                if (i == hwCodeOffset) sb.append(" >> ")
+                sb.append(String.format(Locale.US, "%02X", data[i]))
+                if ((i - start + 1) % 16 == 0 && i > start) sb.append("\n")
+                else sb.append(" ")
             }
-        }.start()
+            onProgress("=== HEX סביב hwcode 0x717 (offset 0x${Integer.toHexString(hwCodeOffset)}) ===\n$sb")
 
-        val filter = IntentFilter().apply {
-            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
-            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
-            addAction(ACTION_USB_PERMISSION)
+            searchOffset = hwCodeOffset + 4
         }
-        registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
 
-        btnHandshake.setOnClickListener {
-            addLog("--- לחיצה ידנית ---")
-            val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
-            if (device != null) {
-                if (usbManager.hasPermission(device)) {
-                    executeParse(device)
-                } else {
-                    requestPermission(device)
-                }
-            } else {
-                addLog("!! לא נמצא מכשיר MediaTek.")
-            }
+        if (foundCount == 0) {
+            onProgress("!! לא נמצא הרצף 17 07 00 00 בקובץ")
+        } else {
+            onProgress("נמצאו $foundCount מופעים של hwcode 0x717. עצרנו כדי לראות את ה-HEX.")
         }
+        
+        return null // עצירה כדי שנראה את ה-HEX
     }
 
-    private fun requestPermission(device: UsbDevice) {
-        if (usbManager.hasPermission(device)) {
-            executeParse(device)
-            return
+    // פונקציה ראשית לבדיקה (כרגע רק מפרסרת ומדפיסה)
+    fun runCarbonara(
+        usbManager: UsbManager,
+        device: UsbDevice,
+        daBytes: ByteArray,
+        onProgress: (String) -> Unit
+    ): String {
+        val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת חיבור נכשלה."
+
+        onProgress("=== שלב 1: פירוק ה-DA ===")
+        val parts = parseDa(daBytes, onProgress)
+        if (parts == null) {
+            connection.close()
+            return "שגיאה: פירוק ה-DA נכשל (עצרנו כדי לראות את ה-HEX)."
         }
-        addLog("מבקש הרשאת USB...")
-        val intent = Intent(ACTION_USB_PERMISSION)
-        val pi = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_MUTABLE)
-        usbManager.requestPermission(device, pi)
-    }
 
-    private fun executeParse(device: UsbDevice) {
-        val dBytes = daBytes ?: return
-        if (isRunning) return
-
-        isRunning = true
-        tvStatus.text = "מפרסר DA..."
-        btnHandshake.isEnabled = false
-
-        Thread {
-            try {
-                val result = MtkBromConnection.runCarbonara(usbManager, device, dBytes) { addLog(it) }
-                runOnUiThread {
-                    addLog("== סיום: $result")
-                    tvStatus.text = result
-                    isRunning = false
-                    btnHandshake.isEnabled = true
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    addLog("!! שגיאה: ${e.message}")
-                    tvStatus.text = "שגיאה."
-                    isRunning = false
-                    btnHandshake.isEnabled = true
-                }
-            }
-        }.start()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        unregisterReceiver(usbReceiver)
+        onProgress("הפירוק הצליח! DA1: ${parts.da1.size} בייט, DA2: ${parts.da2.size} בייט.")
+        connection.close()
+        return "הצלחה בפירוק."
     }
 }
