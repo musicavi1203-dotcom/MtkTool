@@ -162,7 +162,7 @@ object MtkBromConnection {
             Thread.sleep(50)
         }
         
-        val connection = c ?: return "שגיאה: לא הצלחנו לפתוח חיבור אחרי 30 ניסיונות."
+        val connection = c ?: return "שגיאה: לא הצלחנו לפתוח חיבור."
         
         var inEp: UsbEndpoint? = null
         var outEp: UsbEndpoint? = null
@@ -196,26 +196,34 @@ object MtkBromConnection {
         }
         onProgress("0xD7 אושר! (0xD8)")
 
-        // שליחת כתובת + קריאת הד (Big Endian כפי ש-mtkclient עושה)
-        val addrBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(parts.da1Addr.toInt()).array()
+        // שליחת כתובת (Little Endian) + קריאת הד (4 בייט)
+        val addrBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array()
         connection.bulkTransfer(oEp, addrBytes, 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
-        // שליחת גודל + קריאת הד
-        val lenBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(parts.da1.size).array()
+        // שליחת גודל (Little Endian) + קריאת הד (4 בייט)
+        val lenBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1.size).array()
         connection.bulkTransfer(oEp, lenBytes, 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
-        // שליחת siglen + קריאת הד
-        val sigBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(parts.da1SigLen).array()
+        // שליחת siglen (Little Endian) + קריאת הד (4 בייט)
+        val sigBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1SigLen).array()
         connection.bulkTransfer(oEp, sigBytes, 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
-        onProgress("פרמטרים נשלחו. מתחיל להעביר נתונים...")
+        // קריאת סטטוס של 2 בייטים (0xD9 0x00)
+        val ack2 = ByteArray(2); connection.bulkTransfer(iEp, ack2, 2, 2000)
+        val ack2Short = ByteBuffer.wrap(ack2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+        if (ack2Short == 0x1D0D) { connection.close(); return "SLA required (0x1D0D)" }
+        if (ack2Short != 0xD9) { 
+            connection.close(); return "ack=0x${String.format(Locale.US, "%04X", ack2Short)}" 
+        }
+        onProgress("פרמטרים אושרו. מתחיל להעביר נתונים...")
 
-        // שליחת נתונים בצ'אנקים של 16KB + קריאת הד
+        // שליחת נתונים ב-512 בייט + קריאת בייט אישור (0x5A) אחרי כל צ'אנק
         var offset = 0
-        val chunkSize = 16384
+        val chunkSize = 512
+        var lastProgress = -10
         while (offset < parts.da1.size) {
             val len = minOf(chunkSize, parts.da1.size - offset)
             val chunk = parts.da1.copyOfRange(offset, offset + len)
@@ -223,12 +231,19 @@ object MtkBromConnection {
             if (connection.bulkTransfer(oEp, chunk, len, 5000) < 0) {
                 connection.close(); return "שגיאה: שליחת נתונים נכשלה ב-$offset."
             }
-            // קריאת ההד
-            val echoBuf = ByteArray(len)
-            connection.bulkTransfer(iEp, echoBuf, len, 5000)
+            
+            // קריאת בייט אישור אחרי כל צ'אנק
+            val chunkAck = ByteArray(1)
+            if (connection.bulkTransfer(iEp, chunkAck, 1, 5000) <= 0) {
+                connection.close(); return "שגיאה: אין ack ב-$offset."
+            }
             
             offset += len
-            if (offset % (chunkSize * 3) == 0) onProgress("DA1: ${(offset * 100) / parts.da1.size}%")
+            val progress = (offset * 100) / parts.da1.size
+            if (progress >= lastProgress + 10) {
+                onProgress("DA1: $progress%")
+                lastProgress = progress
+            }
         }
 
         // שליחת checksum + קריאת אישור סופי
@@ -241,7 +256,7 @@ object MtkBromConnection {
 
         onProgress("=== שלב ה': קפיצה ל-DA1 ===")
         connection.bulkTransfer(oEp, byteArrayOf(0xD5.toByte()), 1, 2000)
-        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
+        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
         
         val sync = ByteArray(1); connection.bulkTransfer(iEp, sync, 1, 2000)
         if (sync[0] != 0xC0.toByte()) {
