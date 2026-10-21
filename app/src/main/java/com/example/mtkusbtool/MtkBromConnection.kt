@@ -26,12 +26,10 @@ object MtkBromConnection {
         return -1
     }
 
-    // פירוס ה-DA (מבוסס על הניסיונות הקודמים)
     private fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
         val magic = "MTK_DOWNLOAD_AGENT".toByteArray()
         if (indexOf(data, magic) == -1) { onProgress("!! לא נמצא MTK_DOWNLOAD_AGENT"); return null }
         
-        // חיפוש hwcode 0x717 (MT6761)
         val target = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(0x717).array()
         var off = -1
         outer@ for (i in 0..data.size - 4) {
@@ -40,7 +38,6 @@ object MtkBromConnection {
         }
         if (off == -1) { onProgress("!! לא נמצא hwcode 0x717"); return null }
         
-        // קריאת 12 הבייטים של הרשומה
         val buf = ByteBuffer.wrap(data, off, 12).order(ByteOrder.LITTLE_ENDIAN)
         buf.short // magic
         buf.short // hwcode
@@ -74,7 +71,6 @@ object MtkBromConnection {
         return null
     }
 
-    // שליחת פקודת BOOT_TO (0xD5) עם כתובת ונתונים
     private fun bootTo(connection: UsbDeviceConnection, epOut: UsbEndpoint, epIn: UsbEndpoint, addr: Long, data: ByteArray): Boolean {
         if (connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000) < 0) return false
         val addrBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(addr.toInt()).array()
@@ -110,16 +106,13 @@ object MtkBromConnection {
         if (epIn == null || epOut == null) { connection.close(); return "שגיאה: endpoints." }
         val inEp = epIn; val outEp = epOut
 
-        // 1. פירוס
         onProgress("=== שלב 1: פירוס ה-DA ===")
         val parts = parseDa(daBytes, onProgress) ?: run { connection.close(); return "פירוס נכשל." }
 
-        // 2. חישוב hash
         onProgress("=== שלב 2: חישוב hash ===")
         val hash = MessageDigest.getInstance("SHA-256").digest(parts.da2)
         onProgress("SHA-256 של DA2: ${hash.joinToString("") { String.format(Locale.US, "%02x", it) }}")
         
-        // חיפוש ה-hash בתוך DA1 כדי למצוא את הכתובת
         val hashOffset = indexOf(parts.da1, hash)
         if (hashOffset == -1) {
             onProgress("!! לא נמצא hash של DA2 בתוך DA1. ייתכן שה-DA1 מתוקן.")
@@ -127,13 +120,11 @@ object MtkBromConnection {
         }
         onProgress("נמצא hash ב-offset 0x${Integer.toHexString(hashOffset)} בתוך DA1")
 
-        // 3. שליחת ה-hash לכתובתו ב-DA1
         onProgress("=== שלב 3: שליחת hash ===")
         val hashAddr = parts.da1Addr + hashOffset
         if (!bootTo(connection, outEp, inEp, hashAddr, hash)) { connection.close(); return "שליחת hash נכשלה." }
         onProgress("hash נשלח בהצלחה!")
 
-        // 4. שליחת ה-DA2
         onProgress("=== שלב 4: שליחת DA2 ===")
         if (!bootTo(connection, outEp, inEp, parts.da2Addr, parts.da2)) { connection.close(); return "שליחת DA2 נכשלה." }
         onProgress("DA2 נשלח בהצלחה!")
