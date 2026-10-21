@@ -41,35 +41,29 @@ class MainActivity : AppCompatActivity() {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         addLog(">> מכשיר התחבר. PID: $pidStr")
                         if (waitingForReconnect && device.productId == 0x0003) {
-                            // זה ה-reconnect! לא מחכים, פועלים מיד
                             addLog(">>> BROM חזר! מנסה לתפוס...")
                             waitingForReconnect = false
-                            // אם יש הרשאה, נשלח מיד. אחרת, נבקש.
                             if (usbManager.hasPermission(device)) {
                                 executeDa1Phase(device)
                             } else {
                                 addLog("אין הרשאה, מבקש...")
                                 requestPermission(device, true)
                             }
-                        } else if (!waitingForReconnect) {
+                        } else if (!waitingForReconnect && !isRunning) {
                             requestPermission(device, false)
                         }
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     addLog("<< מכשיר התנתק.")
+                    if (!waitingForReconnect && !isRunning) btnHandshake.isEnabled = true
                 }
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && device != null) {
-                        if (waitingForReconnect || device.productId == 0x0003 && !isRunning) {
-                            // אם אנחנו אחרי Kamakiri, או שזה BROM - נעשה DA1
-                            if (isRunning) {
-                                waitingForReconnect = false
-                                executeDa1Phase(device)
-                            } else {
-                                executeDa1Phase(device)
-                            }
+                        if (waitingForReconnect) {
+                            waitingForReconnect = false
+                            executeDa1Phase(device)
                         } else {
                             executeKamakiriPhase(device)
                         }
