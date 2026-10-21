@@ -8,7 +8,6 @@ import java.util.Locale
 
 object MtkBromConnection {
 
-    // מבנה הרשומה של כל אזור (EntryRegion) בקובץ ה-DA
     data class DaRegion(
         val buf: Int,
         val len: Int,
@@ -28,7 +27,79 @@ object MtkBromConnection {
         val da2Address: Long
     )
 
-    // פונקציית עזר לחיפוש מערך בתוך מערך (למקרה הצורך)
+    // סורק את כל הקובץ אחרי רצף DA DA ומוצא רשומה עם hwcode 0x717
+    fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
+        if (data.size < 0x100) return null
+
+        onProgress("סורק את הקובץ (${data.size} בייט) אחרי רשומות DA DA...")
+
+        val magicDa = byteArrayOf(0xDA.toByte(), 0xDA.toByte())
+        var searchOffset = 0
+        var foundCount = 0
+
+        while (searchOffset < data.size - 12) {
+            val idx = indexOf(data.copyOfRange(searchOffset, data.size), magicDa)
+            if (idx == -1) break
+            val entryOffset = searchOffset + idx
+            searchOffset = entryOffset + 2
+
+            // קריאת כותרת הרשומה (12 בייטים)
+            val buf = ByteBuffer.wrap(data, entryOffset, 12).order(ByteOrder.LITTLE_ENDIAN)
+            val magic = buf.short.toInt() and 0xFFFF
+            val hwCode = buf.short.toInt() and 0xFFFF
+            val hwSubCode = buf.short.toInt() and 0xFFFF
+            val hwVer = buf.short.toInt() and 0xFFFF
+            val swVer = buf.short.toInt() and 0xFFFF
+            val numRegions = buf.short.toInt() and 0xFFFF
+
+            // סינון: רק רשומות עם hwcode 0x717 ומספר regions הגיוני
+            if (hwCode == 0x717 && numRegions in 1..10) {
+                foundCount++
+                onProgress("\n>>> מצאנו Entry של MT6761 ב-offset 0x${Integer.toHexString(entryOffset)}!")
+                onProgress("    hwCode=0x${Integer.toHexString(hwCode)}, subCode=0x${Integer.toHexString(hwSubCode)}, hwVer=0x${Integer.toHexString(hwVer)}, swVer=0x${Integer.toHexString(swVer)}, regions=$numRegions")
+
+                // קריאת האזורים (Regions)
+                val regions = mutableListOf<DaRegion>()
+                var regionOffset = entryOffset + 12
+                for (r in 0 until numRegions) {
+                    if (regionOffset + 20 > data.size) break
+                    val rb = ByteBuffer.wrap(data, regionOffset, 20).order(ByteOrder.LITTLE_ENDIAN)
+                    val mBuf = rb.int
+                    val mLen = rb.int
+                    val mAddr = rb.int.toLong() and 0xFFFFFFFFL
+                    val mOffset = rb.int
+                    val mSigLen = rb.int
+                    regions.add(DaRegion(mBuf, mLen, mAddr, mOffset, mSigLen))
+                    onProgress("    Region $r: buf=0x${Integer.toHexString(mBuf)}, len=0x${Integer.toHexString(mLen)} (${mLen} בייט), addr=0x${java.lang.Long.toHexString(mAddr)}, offset=0x${Integer.toHexString(mOffset)}, sigLen=0x${Integer.toHexString(mSigLen)}")
+                    regionOffset += 20
+                }
+
+                if (regions.size >= 3) {
+                    val da1 = regions[1]
+                    val da2 = regions[2]
+                    onProgress("\n=== נמצאו DA1 ו-DA2! ===")
+                    onProgress("DA1: offset=0x${Integer.toHexString(da1.offset)}, len=${da1.len} בייט, addr=0x${java.lang.Long.toHexString(da1.addr)}")
+                    onProgress("DA2: offset=0x${Integer.toHexString(da2.offset)}, len=${da2.len} בייט, addr=0x${java.lang.Long.toHexString(da2.addr)}")
+
+                    if (da1.offset + da1.len <= data.size && da2.offset + da2.len <= data.size) {
+                        return DaParts(
+                            data.copyOfRange(da1.offset, da1.offset + da1.len), da1.offset, da1.len, da1.addr,
+                            data.copyOfRange(da2.offset, da2.offset + da2.len), da2.offset, da2.len, da2.addr
+                        )
+                    } else {
+                        onProgress("!! ה-offsets וה-lengths חורגים מגודל הקובץ")
+                    }
+                }
+            }
+        }
+
+        onProgress("\nסריקה הסתיימה. נמצאו $foundCount מועמדים ל-MT6761 (עם regions הגיוני).")
+        if (foundCount == 0) {
+            onProgress("!! לא נמצאה אף רשומת MT6761 (0x717) בקובץ הזה.")
+        }
+        return null
+    }
+
     private fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
         if (needle.isEmpty() || haystack.size < needle.size) return -1
         outer@ for (i in 0..haystack.size - needle.size) {
@@ -40,94 +111,6 @@ object MtkBromConnection {
         return -1
     }
 
-    // פונקציית הפירוס המרכזית - מבוססת על מפרט V5/V6
-    fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
-        if (data.size < 0x18) {
-            onProgress("!! הקובץ קטן מדי (${data.size} בייט)")
-            return null
-        }
-
-        // 1. קריאת הכותרת (Header)
-        // מחרוזת של 16 בייטים (MTK_DOWNLOAD_AGENT או MTK_DA_v6)
-        val magic = String(data, 0, 16, Charsets.US_ASCII).trim('\u0000')
-        onProgress("Header Magic: $magic")
-        
-        val buf = ByteBuffer.wrap(data, 0x10, 8).order(ByteOrder.LITTLE_ENDIAN)
-        val version = buf.int
-        val numEntries = buf.int
-        onProgress("Version: $version, Num Entries: $numEntries")
-
-        if (!magic.contains("MTK_DOWNLOAD_AGENT") && !magic.contains("MTK_DA_v6")) {
-            onProgress("!! הכותרת לא מזוהה. ייתכן שהקובץ מוצפן, דחוס או בפורמט אחר.")
-            return null
-        }
-
-        // 2. מעבר על רשומות השבבים (Entries)
-        var offset = 0x18
-        for (e in 0 until numEntries) {
-            if (offset + 12 > data.size) break
-            
-            val entryBuf = ByteBuffer.wrap(data, offset, 12).order(ByteOrder.LITTLE_ENDIAN)
-            val entryMagic = entryBuf.short.toInt() and 0xFFFF
-            val hwCode = entryBuf.short.toInt() and 0xFFFF
-            val hwSubCode = entryBuf.short.toInt() and 0xFFFF
-            val hwVer = entryBuf.short.toInt() and 0xFFFF
-            val swVer = entryBuf.short.toInt() and 0xFFFF
-            val numRegions = entryBuf.short.toInt() and 0xFFFF
-
-            // לפעמים יש רשומות ריקות (padding), נדלג עליהן
-            if (entryMagic == 0) {
-                offset += 12
-                continue
-            }
-
-            onProgress("Entry $e: magic=0x${Integer.toHexString(entryMagic)}, hwCode=0x${Integer.toHexString(hwCode)}, regions=$numRegions")
-
-            // 3. אם מצאנו את השבב שלנו (MT6761)
-            if (entryMagic == 0xdada && hwCode == 0x717) {
-                onProgress("  >>> מצאנו את MT6761 (0x717)! <<<")
-                val regions = mutableListOf<DaRegion>()
-                var regionOffset = offset + 12
-                
-                for (r in 0 until numRegions) {
-                    if (regionOffset + 20 > data.size) break
-                    val rb = ByteBuffer.wrap(data, regionOffset, 20).order(ByteOrder.LITTLE_ENDIAN)
-                    val mBuf = rb.int
-                    val mLen = rb.int
-                    val mAddr = rb.int.toLong() and 0xFFFFFFFFL
-                    val mOffset = rb.int
-                    val mSigLen = rb.int
-                    regions.add(DaRegion(mBuf, mLen, mAddr, mOffset, mSigLen))
-                    onProgress("    Region $r: len=${mLen}, addr=0x${java.lang.Long.toHexString(mAddr)}, offset=${mOffset}")
-                    regionOffset += 20
-                }
-                
-                if (regions.size >= 3) {
-                    val da1 = regions[1]
-                    val da2 = regions[2]
-                    onProgress("  DA1: offset=${da1.offset}, len=${da1.len}, addr=0x${java.lang.Long.toHexString(da1.addr)}")
-                    onProgress("  DA2: offset=${da2.offset}, len=${da2.len}, addr=0x${java.lang.Long.toHexString(da2.addr)}")
-                    
-                    if (da1.offset + da1.len <= data.size && da2.offset + da2.len <= data.size) {
-                        return DaParts(
-                            data.copyOfRange(da1.offset, da1.offset + da1.len), da1.offset, da1.len, da1.addr,
-                            data.copyOfRange(da2.offset, da2.offset + da2.len), da2.offset, da2.len, da2.addr
-                        )
-                    } else {
-                        onProgress("  !! ה-offsets וה-lengths חורגים מגודל הקובץ")
-                    }
-                }
-            }
-
-            // 4. דילוג לרשומה הבאה
-            offset += 12 + (numRegions * 20)
-        }
-
-        onProgress("!! לא נמצאה רשומה לשבב 0x717 בקובץ.")
-        return null
-    }
-
-    // פונקציה ראשית לבדיקה
     fun runCarbonara(
         usbManager: UsbManager,
         device: UsbDevice,
@@ -139,7 +122,6 @@ object MtkBromConnection {
         if (parts == null) {
             return "הניתוח הסתיים. ראה את הממצאים בלוג למעלה."
         }
-
         onProgress("\n=== הצלחה! נמצאו DA1 ו-DA2 ===")
         onProgress("DA1: ${parts.da1.size} בייט, DA2: ${parts.da2.size} בייט")
         return "הצלחה בפירוק!"
