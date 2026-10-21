@@ -1,6 +1,9 @@
 package com.example.mtkusbtool
 
+import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbDeviceConnection
+import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -8,122 +11,208 @@ import java.util.Locale
 
 object MtkBromConnection {
 
-    data class DaRegion(
-        val buf: Int,
-        val len: Int,
-        val addr: Long,
-        val offset: Int,
-        val sigLen: Int
-    )
-
-    data class DaParts(
-        val da1: ByteArray,
-        val da1Offset: Int,
-        val da1Size: Int,
-        val da1Address: Long,
-        val da2: ByteArray,
-        val da2Offset: Int,
-        val da2Size: Int,
-        val da2Address: Long
-    )
-
-    // סורק את כל הקובץ אחרי רצף DA DA ומוצא רשומה עם hwcode 0x717
-    fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
-        if (data.size < 0x100) return null
-
-        onProgress("סורק את הקובץ (${data.size} בייט) אחרי רשומות DA DA...")
-
-        val magicDa = byteArrayOf(0xDA.toByte(), 0xDA.toByte())
-        var searchOffset = 0
-        var foundCount = 0
-
-        while (searchOffset < data.size - 12) {
-            val idx = indexOf(data.copyOfRange(searchOffset, data.size), magicDa)
-            if (idx == -1) break
-            val entryOffset = searchOffset + idx
-            searchOffset = entryOffset + 2
-
-            // קריאת כותרת הרשומה (12 בייטים)
-            val buf = ByteBuffer.wrap(data, entryOffset, 12).order(ByteOrder.LITTLE_ENDIAN)
-            val magic = buf.short.toInt() and 0xFFFF
-            val hwCode = buf.short.toInt() and 0xFFFF
-            val hwSubCode = buf.short.toInt() and 0xFFFF
-            val hwVer = buf.short.toInt() and 0xFFFF
-            val swVer = buf.short.toInt() and 0xFFFF
-            val numRegions = buf.short.toInt() and 0xFFFF
-
-            // סינון: רק רשומות עם hwcode 0x717 ומספר regions הגיוני
-            if (hwCode == 0x717 && numRegions in 1..10) {
-                foundCount++
-                onProgress("\n>>> מצאנו Entry של MT6761 ב-offset 0x${Integer.toHexString(entryOffset)}!")
-                onProgress("    hwCode=0x${Integer.toHexString(hwCode)}, subCode=0x${Integer.toHexString(hwSubCode)}, hwVer=0x${Integer.toHexString(hwVer)}, swVer=0x${Integer.toHexString(swVer)}, regions=$numRegions")
-
-                // קריאת האזורים (Regions)
-                val regions = mutableListOf<DaRegion>()
-                var regionOffset = entryOffset + 12
-                for (r in 0 until numRegions) {
-                    if (regionOffset + 20 > data.size) break
-                    val rb = ByteBuffer.wrap(data, regionOffset, 20).order(ByteOrder.LITTLE_ENDIAN)
-                    val mBuf = rb.int
-                    val mLen = rb.int
-                    val mAddr = rb.int.toLong() and 0xFFFFFFFFL
-                    val mOffset = rb.int
-                    val mSigLen = rb.int
-                    regions.add(DaRegion(mBuf, mLen, mAddr, mOffset, mSigLen))
-                    onProgress("    Region $r: buf=0x${Integer.toHexString(mBuf)}, len=0x${Integer.toHexString(mLen)} (${mLen} בייט), addr=0x${java.lang.Long.toHexString(mAddr)}, offset=0x${Integer.toHexString(mOffset)}, sigLen=0x${Integer.toHexString(mSigLen)}")
-                    regionOffset += 20
+    // קריסת Preloader
+    fun crashPreloader(usbManager: UsbManager, device: UsbDevice): Boolean {
+        val connection = usbManager.openDevice(device) ?: return false
+        var epOut: UsbEndpoint? = null
+        for (i in 0 until device.interfaceCount) {
+            val usbInterface = device.getInterface(i)
+            if (connection.claimInterface(usbInterface, true)) {
+                for (j in 0 until usbInterface.endpointCount) {
+                    val ep = usbInterface.getEndpoint(j)
+                    if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK && ep.direction == UsbConstants.USB_DIR_OUT) epOut = ep
                 }
-
-                if (regions.size >= 3) {
-                    val da1 = regions[1]
-                    val da2 = regions[2]
-                    onProgress("\n=== נמצאו DA1 ו-DA2! ===")
-                    onProgress("DA1: offset=0x${Integer.toHexString(da1.offset)}, len=${da1.len} בייט, addr=0x${java.lang.Long.toHexString(da1.addr)}")
-                    onProgress("DA2: offset=0x${Integer.toHexString(da2.offset)}, len=${da2.len} בייט, addr=0x${java.lang.Long.toHexString(da2.addr)}")
-
-                    if (da1.offset + da1.len <= data.size && da2.offset + da2.len <= data.size) {
-                        return DaParts(
-                            data.copyOfRange(da1.offset, da1.offset + da1.len), da1.offset, da1.len, da1.addr,
-                            data.copyOfRange(da2.offset, da2.offset + da2.len), da2.offset, da2.len, da2.addr
-                        )
-                    } else {
-                        onProgress("!! ה-offsets וה-lengths חורגים מגודל הקובץ")
-                    }
-                }
+                if (epOut != null) break
             }
         }
+        if (epOut == null) { connection.close(); return false }
 
-        onProgress("\nסריקה הסתיימה. נמצאו $foundCount מועמדים ל-MT6761 (עם regions הגיוני).")
-        if (foundCount == 0) {
-            onProgress("!! לא נמצאה אף רשומת MT6761 (0x717) בקובץ הזה.")
-        }
-        return null
+        try {
+            connection.bulkTransfer(epOut, byteArrayOf(0xA1.toByte()), 1, 100)
+            connection.bulkTransfer(epOut, byteArrayOf(0xD7.toByte()), 1, 100)
+            connection.bulkTransfer(epOut, byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()), 4, 100)
+            Thread.sleep(50)
+        } catch (e: Exception) {} finally { connection.close() }
+        return true
     }
 
-    private fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
-        if (needle.isEmpty() || haystack.size < needle.size) return -1
-        outer@ for (i in 0..haystack.size - needle.size) {
-            for (j in needle.indices) {
-                if (haystack[i + j] != needle[j]) continue@outer
-            }
-            return i
-        }
-        return -1
+    // echo
+    private fun echo(connection: UsbDeviceConnection, epOut: UsbEndpoint, epIn: UsbEndpoint, data: ByteArray): Boolean {
+        if (connection.bulkTransfer(epOut, data, data.size, 2000) < 0) return false
+        val response = ByteArray(data.size)
+        if (connection.bulkTransfer(epIn, response, data.size, 2000) <= 0) return false
+        return true
     }
 
-    fun runCarbonara(
+    // write32
+    private fun write32(connection: UsbDeviceConnection, epOut: UsbEndpoint, epIn: UsbEndpoint, addr: Int, values: IntArray): Boolean {
+        if (!echo(connection, epOut, epIn, byteArrayOf(0xD4.toByte()))) return false
+        if (!echo(connection, epOut, epIn, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array())) return false
+        if (!echo(connection, epOut, epIn, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(values.size).array())) return false
+        for (v in values) {
+            val vBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(v).array()
+            if (connection.bulkTransfer(epOut, vBytes, 4, 2000) < 0) return false
+        }
+        return true
+    }
+
+    // הרצף: שני חיבורים במקביל
+    fun runKamakiriWithTwoConnections(
         usbManager: UsbManager,
         device: UsbDevice,
+        payloadBytes: ByteArray,
         daBytes: ByteArray,
         onProgress: (String) -> Unit
     ): String {
-        onProgress("=== שלב 1: ניתוח ה-DA ===")
-        val parts = parseDa(daBytes, onProgress)
-        if (parts == null) {
-            return "הניתוח הסתיים. ראה את הממצאים בלוג למעלה."
+        // 1. קריסה
+        onProgress("קורס Preloader...")
+        crashPreloader(usbManager, device)
+
+        onProgress("ממתין ל-BROM...")
+        var foundBrom: UsbDevice? = null
+        for (i in 0 until 100) {
+            foundBrom = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D && it.productId == 0x0003 }
+            if (foundBrom != null) break
+            Thread.sleep(100)
         }
-        onProgress("\n=== הצלחה! נמצאו DA1 ו-DA2 ===")
-        onProgress("DA1: ${parts.da1.size} בייט, DA2: ${parts.da2.size} בייט")
-        return "הצלחה בפירוק!"
+        if (foundBrom == null) return "שגיאה: לא הצלחנו להגיע ל-BROM."
+        val bd: UsbDevice = foundBrom
+
+        onProgress("מצאנו BROM! ממתין 1.5 שניות...")
+        Thread.sleep(1500)
+
+        // 2. פתיחת חיבור A
+        val connectionA = usbManager.openDevice(bd) ?: return "שגיאה: פתיחת חיבור A נכשלה."
+        var epInA: UsbEndpoint? = null
+        var epOutA: UsbEndpoint? = null
+        for (i in 0 until bd.interfaceCount) {
+            val usbInterface = bd.getInterface(i)
+            if (connectionA.claimInterface(usbInterface, true)) {
+                for (j in 0 until usbInterface.endpointCount) {
+                    val ep = usbInterface.getEndpoint(j)
+                    if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
+                        if (ep.direction == UsbConstants.USB_DIR_IN) epInA = ep
+                        else if (ep.direction == UsbConstants.USB_DIR_OUT) epOutA = ep
+                    }
+                }
+                if (epInA != null && epOutA != null) break
+            }
+        }
+        if (epInA == null || epOutA == null) { connectionA.close(); return "שגיאה: לא נמצאו endpoints בחיבור A." }
+        val inA = epInA
+        val outA = epOutA
+
+        // 3. לחיצת יד על חיבור A
+        onProgress("לחיצת יד על חיבור A...")
+        connectionA.bulkTransfer(outA, byteArrayOf(0xA0.toByte()), 1, 1000)
+        val hsAck = ByteArray(1)
+        val hsResult = connectionA.bulkTransfer(inA, hsAck, 1, 1000)
+        if (hsResult <= 0 || (hsAck[0] != 0x5F.toByte() && hsAck[0] != 0xC0.toByte())) {
+            val hex = if (hsResult > 0) String.format(Locale.US, "0x%02X", hsAck[0]) else "אין"
+            connectionA.close()
+            return "שגיאה בלחיצת יד A: $hex"
+        }
+
+        // 4. כתיבת ה-payload על חיבור A
+        onProgress("כותב Payload לחיבור A (${payloadBytes.size} בייט)...")
+        val payloadAddr = 0x100A00
+        var offset = 0
+        while (offset < payloadBytes.size) {
+            val chunk = payloadBytes.copyOfRange(offset, minOf(offset + 4, payloadBytes.size))
+            val value = ByteBuffer.wrap(chunk + ByteArray(4 - chunk.size)).order(ByteOrder.BIG_ENDIAN).int
+            if (!write32(connectionA, outA, inA, payloadAddr + offset, intArrayOf(value))) {
+                connectionA.close()
+                return "שגיאה בכתיבת Payload ב-offset $offset"
+            }
+            offset += 4
+            if (offset % 100 == 0) onProgress("Payload: ${(offset * 100) / payloadBytes.size}%")
+        }
+
+        // 5. פתיחת חיבור B (מקביל לחיבור A, לא סוגרים את A!)
+        onProgress("\nפותח חיבור B (מקביל)...")
+        val connectionB = usbManager.openDevice(bd)
+        if (connectionB == null) {
+            onProgress("!! פתיחת חיבור B נכשלה. ממשיך עם חיבור A בלבד...")
+        } else {
+            onProgress("חיבור B נפתח בהצלחה!")
+            
+            // 6. שליחת ctrl_transfer על חיבור B
+            onProgress("שולח ctrl_transfer על חיבור B...")
+            try {
+                connectionB.controlTransfer(0xA1, 0, 0, 0x25, null, 0, 1000)
+                onProgress("ctrl_transfer בוצע על B!")
+            } catch (e: Exception) {
+                onProgress("ctrl_transfer על B נכשל: ${e.message}")
+            }
+            
+            // לא סוגרים את connectionB! אולי הוא נחוץ להמשך
+        }
+
+        // 7. ניסיון לשלוח את ה-DA על חיבור A (שעדיין פתוח!)
+        onProgress("\nמנסה לשלוח DA על חיבור A המקורי...")
+        
+        // פקודת 0xD7
+        if (connectionA.bulkTransfer(outA, byteArrayOf(0xD7.toByte()), 1, 2000) < 0) {
+            connectionA.close()
+            return "שגיאה: שליחת 0xD7 על A נכשלה."
+        }
+        
+        val ack1 = ByteArray(1)
+        val ack1Result = connectionA.bulkTransfer(inA, ack1, 1, 2000)
+        if (ack1Result <= 0 || ack1[0] != 0xD8.toByte()) {
+            val hex = if (ack1Result > 0) String.format(Locale.US, "0x%02X", ack1[0]) else "אין"
+            connectionA.close()
+            return "שגיאה: תגובה ל-0xD7: $hex"
+        }
+        onProgress("0xD7 אושר! (0xD8)")
+
+        // שליחת גודל
+        val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
+        if (connectionA.bulkTransfer(outA, sizeBytes, 4, 2000) < 0) {
+            connectionA.close()
+            return "שגיאה: שליחת גודל DA נכשלה."
+        }
+        
+        val ack2 = ByteArray(1)
+        val ack2Result = connectionA.bulkTransfer(inA, ack2, 1, 2000)
+        if (ack2Result <= 0 || ack2[0] != 0xD9.toByte()) {
+            val hex = if (ack2Result > 0) String.format(Locale.US, "0x%02X", ack2[0]) else "אין"
+            connectionA.close()
+            return "שגיאה: תגובה לגודל: $hex"
+        }
+        onProgress("גודל אושר! (0xD9) - מתחיל להעביר נתונים...")
+
+        // שליחת נתוני ה-DA
+        var daOffset = 0
+        val chunkSize = 512
+        while (daOffset < daBytes.size) {
+            val length = minOf(chunkSize, daBytes.size - daOffset)
+            val chunk = daBytes.copyOfRange(daOffset, daOffset + length)
+            if (connectionA.bulkTransfer(outA, chunk, length, 2000) < 0) {
+                connectionA.close()
+                return "שגיאה: שליחת נתונים ב-$daOffset."
+            }
+            val ack = ByteArray(1)
+            val ackResult = connectionA.bulkTransfer(inA, ack, 1, 2000)
+            if (ackResult <= 0 || (ack[0] != 0x5A.toByte() && ack[0] != 0x5F.toByte())) {
+                val hex = if (ackResult > 0) String.format(Locale.US, "0x%02X", ack[0]) else "אין"
+                connectionA.close()
+                return "שגיאה: תגובה לנתונים ב-$daOffset: $hex"
+            }
+            daOffset += length
+            if (daOffset % (chunkSize * 40) == 0) onProgress("DA: ${(daOffset * 100) / daBytes.size}%")
+        }
+
+        // הרצת ה-DA
+        onProgress("מריץ DA...")
+        if (connectionA.bulkTransfer(outA, byteArrayOf(0xD5.toByte()), 1, 2000) < 0) {
+            connectionA.close()
+            return "שגיאה: שליחת 0xD5 נכשלה."
+        }
+        val finalAck = ByteArray(2)
+        connectionA.bulkTransfer(inA, finalAck, 2, 2000)
+
+        connectionA.close()
+        return "הצלחה מסחררת! ה-DA נשלח והורץ על חיבור A המקורי!"
     }
 }
