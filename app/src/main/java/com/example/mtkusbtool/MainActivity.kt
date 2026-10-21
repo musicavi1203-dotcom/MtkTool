@@ -52,7 +52,7 @@ class MainActivity : AppCompatActivity() {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     if (granted && device != null) {
                         addLog(">> הרשאה אושרה.")
-                        executeTwoConnections(device)
+                        executeWrite32(device)
                     } else {
                         addLog("!! הרשאה נדחתה.")
                     }
@@ -103,7 +103,7 @@ class MainActivity : AppCompatActivity() {
             addLog("--- לחיצה ידנית ---")
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
-                if (usbManager.hasPermission(device)) executeTwoConnections(device)
+                if (usbManager.hasPermission(device)) executeWrite32(device)
                 else requestPermission(device)
             } else addLog("!! לא נמצא מכשיר.")
         }
@@ -111,7 +111,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermission(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
-            executeTwoConnections(device)
+            executeWrite32(device)
             return
         }
         addLog("מבקש הרשאה...")
@@ -120,18 +120,18 @@ class MainActivity : AppCompatActivity() {
         usbManager.requestPermission(device, pi)
     }
 
-    private fun executeTwoConnections(device: UsbDevice) {
+    private fun executeWrite32(device: UsbDevice) {
         val pBytes = payloadBytes ?: return
         val dBytes = daBytes ?: return
         if (isRunning) return
 
         isRunning = true
-        tvStatus.text = "מריץ שני חיבורים..."
+        tvStatus.text = "מריץ write32 + DA..."
         btnHandshake.isEnabled = false
 
         Thread {
             try {
-                val result = MtkBromConnection.runKamakiriWithTwoConnections(
+                val result = MtkBromConnection.runKamakiriWrite32(
                     usbManager, device, pBytes, dBytes
                 ) { addLog(it) }
                 runOnUiThread {
