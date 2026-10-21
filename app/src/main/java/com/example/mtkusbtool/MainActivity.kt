@@ -42,13 +42,13 @@ class MainActivity : AppCompatActivity() {
                         addLog(">> מכשיר התחבר. PID: $pidStr")
                         if (waitingForReconnect) {
                             addLog(">>> זה ה-reconnect! ממשיך לשלב DA1 <<<")
-                            waitingForReconnect = false
+                            // לא מאפסים כאן! מחכים לרגע הנכון
                             Thread {
                                 Thread.sleep(1500)
-                                runOnUiThread { requestPermission(device, isDa1Phase = true) }
+                                runOnUiThread { requestPermission(device, true) }
                             }.start()
                         } else {
-                            requestPermission(device, isDa1Phase = false)
+                            requestPermission(device, false)
                         }
                     }
                 }
@@ -59,9 +59,8 @@ class MainActivity : AppCompatActivity() {
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && device != null) {
-                        // אם אנחנו מחכים ל-reconnect, זה שלב DA1. אחרת, זה שלב Kamakiri.
                         if (waitingForReconnect) {
-                            waitingForReconnect = false
+                            waitingForReconnect = false // איפוס רק כאן!
                             executeDa1Phase(device)
                         } else {
                             executeKamakiriPhase(device)
@@ -80,7 +79,7 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        waitingForReconnect = false // איפוס במפורש
+        waitingForReconnect = false
 
         tvStatus.text = "טוען קבצים..."
         Thread {
@@ -107,20 +106,24 @@ class MainActivity : AppCompatActivity() {
 
         btnHandshake.setOnClickListener {
             addLog("--- מתחיל תהליך מלא ---")
-            // איפוס המצב כדי להתחיל תמיד מ-Kamakiri
             waitingForReconnect = false
             
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 if (usbManager.hasPermission(device)) executeKamakiriPhase(device)
-                else requestPermission(device, isDa1Phase = false)
+                else requestPermission(device, false)
             } else addLog("!! לא נמצא מכשיר.")
         }
     }
 
     private fun requestPermission(device: UsbDevice, isDa1Phase: Boolean) {
         if (usbManager.hasPermission(device)) {
-            if (isDa1Phase) executeDa1Phase(device) else executeKamakiriPhase(device)
+            if (isDa1Phase) {
+                waitingForReconnect = false
+                executeDa1Phase(device)
+            } else {
+                executeKamakiriPhase(device)
+            }
             return
         }
         addLog("מבקש הרשאה...")
