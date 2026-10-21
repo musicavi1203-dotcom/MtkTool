@@ -73,8 +73,8 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                addLog("טוען DA_PL_NO_CERT_V6.bin...")
-                assets.open("DA_PL_NO_CERT_V6.bin").use { daBytes = it.readBytes() }
+                addLog("טוען MT6761.bin...")
+                assets.open("MT6761.bin").use { daBytes = it.readBytes() }
                 addLog("נטען בהצלחה (${daBytes?.size} בייט).")
                 runOnUiThread {
                     tvStatus.text = "מוכן. חבר את המכשיר."
