@@ -63,8 +63,8 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                addLog("טוען DA_SWSEC_CRYPTO20.bin...")
-                assets.open("DA_SWSEC_CRYPTO20.bin").use { daBytes = it.readBytes() }
+                addLog("טוען MTK_AllInOne_DA.bin (18MB)...")
+                assets.open("MTK_AllInOne_DA.bin").use { daBytes = it.readBytes() }
                 addLog("נטען בהצלחה (${daBytes?.size} בייט).")
                 runOnUiThread { tvStatus.text = "מוכן. חבר את המכשיר."; btnHandshake.isEnabled = true }
             } catch (e: Exception) {
