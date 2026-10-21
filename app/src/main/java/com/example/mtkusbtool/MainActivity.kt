@@ -40,28 +40,36 @@ class MainActivity : AppCompatActivity() {
                     if (device != null && device.vendorId == 0x0E8D) {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         addLog(">> מכשיר התחבר. PID: $pidStr")
-                        if (waitingForReconnect) {
-                            addLog(">>> זה ה-reconnect! ממשיך לשלב DA1 <<<")
-                            // לא מאפסים כאן! מחכים לרגע הנכון
-                            Thread {
-                                Thread.sleep(1500)
-                                runOnUiThread { requestPermission(device, true) }
-                            }.start()
-                        } else {
+                        if (waitingForReconnect && device.productId == 0x0003) {
+                            // זה ה-reconnect! לא מחכים, פועלים מיד
+                            addLog(">>> BROM חזר! מנסה לתפוס...")
+                            waitingForReconnect = false
+                            // אם יש הרשאה, נשלח מיד. אחרת, נבקש.
+                            if (usbManager.hasPermission(device)) {
+                                executeDa1Phase(device)
+                            } else {
+                                addLog("אין הרשאה, מבקש...")
+                                requestPermission(device, true)
+                            }
+                        } else if (!waitingForReconnect) {
                             requestPermission(device, false)
                         }
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     addLog("<< מכשיר התנתק.")
-                    if (!waitingForReconnect && !isRunning) btnHandshake.isEnabled = true
                 }
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && device != null) {
-                        if (waitingForReconnect) {
-                            waitingForReconnect = false // איפוס רק כאן!
-                            executeDa1Phase(device)
+                        if (waitingForReconnect || device.productId == 0x0003 && !isRunning) {
+                            // אם אנחנו אחרי Kamakiri, או שזה BROM - נעשה DA1
+                            if (isRunning) {
+                                waitingForReconnect = false
+                                executeDa1Phase(device)
+                            } else {
+                                executeDa1Phase(device)
+                            }
                         } else {
                             executeKamakiriPhase(device)
                         }
@@ -107,7 +115,6 @@ class MainActivity : AppCompatActivity() {
         btnHandshake.setOnClickListener {
             addLog("--- מתחיל תהליך מלא ---")
             waitingForReconnect = false
-            
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 if (usbManager.hasPermission(device)) executeKamakiriPhase(device)
@@ -118,12 +125,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermission(device: UsbDevice, isDa1Phase: Boolean) {
         if (usbManager.hasPermission(device)) {
-            if (isDa1Phase) {
-                waitingForReconnect = false
-                executeDa1Phase(device)
-            } else {
-                executeKamakiriPhase(device)
-            }
+            if (isDa1Phase) executeDa1Phase(device) else executeKamakiriPhase(device)
             return
         }
         addLog("מבקש הרשאה...")
