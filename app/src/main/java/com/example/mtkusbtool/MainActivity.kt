@@ -19,8 +19,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvLog: TextView
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
+    private var payloadBytes: ByteArray? = null
     private var daBytes: ByteArray? = null
     private var isRunning = false
+    private var waitingForReconnect = false
 
     private fun addLog(message: String) {
         runOnUiThread {
@@ -36,15 +38,30 @@ class MainActivity : AppCompatActivity() {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     if (device != null && device.vendorId == 0x0E8D) {
-                        addLog(">> מכשיר התחבר. PID: 0x${String.format(Locale.US, "%04X", device.productId)}")
-                        requestPermission(device)
+                        val pidStr = String.format(Locale.US, "0x%04X", device.productId)
+                        addLog(">> מכשיר התחבר. PID: $pidStr")
+                        if (waitingForReconnect) {
+                            addLog(">>> זה ה-reconnect! ממשיך לשלב DA1 <<<")
+                            waitingForReconnect = false
+                            Thread {
+                                Thread.sleep(1500)
+                                runOnUiThread { requestPermission(device) }
+                            }.start()
+                        } else {
+                            requestPermission(device)
+                        }
                     }
                 }
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> addLog("<< מכשיר התנתק.")
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                    addLog("<< מכשיר התנתק.")
+                    if (!waitingForReconnect && !isRunning) btnHandshake.isEnabled = true
+                }
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && device != null) {
-                        executeFlow(device)
+                        if (daBytes != null && payloadBytes != null) {
+                            executeDa1Phase(device)
+                        }
                     } else addLog("!! הרשאה נדחתה.")
                 }
             }
@@ -59,14 +76,17 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        tvStatus.text = "טוען DA..."
+        tvStatus.text = "טוען קבצים..."
 
         Thread {
             try {
-                addLog("טוען MTK_DA_V5.bin (21.4MB)...")
+                addLog("טוען mt6761_payload.bin...")
+                assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
+                addLog("נטען Payload: ${payloadBytes?.size} בייט.")
+                addLog("טוען MTK_DA_V5.bin...")
                 assets.open("MTK_DA_V5.bin").use { daBytes = it.readBytes() }
-                addLog("נטען בהצלחה (${daBytes?.size} בייט).")
-                runOnUiThread { tvStatus.text = "מוכן. חבר את המכשיר."; btnHandshake.isEnabled = true }
+                addLog("נטען DA: ${daBytes?.size} בייט.")
+                runOnUiThread { tvStatus.text = "מוכן. חבר את המכשיר (כבוי)."; btnHandshake.isEnabled = true }
             } catch (e: Exception) {
                 addLog("!! שגיאה: ${e.message}")
                 runOnUiThread { tvStatus.text = "שגיאת קבצים." }
@@ -81,34 +101,71 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
 
         btnHandshake.setOnClickListener {
-            addLog("--- לחיצה ידנית ---")
+            addLog("--- מתחיל תהליך מלא ---")
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
-                if (usbManager.hasPermission(device)) executeFlow(device)
+                if (usbManager.hasPermission(device)) executeKamakiriPhase(device)
                 else requestPermission(device)
             } else addLog("!! לא נמצא מכשיר.")
         }
     }
 
     private fun requestPermission(device: UsbDevice) {
-        if (usbManager.hasPermission(device)) { executeFlow(device); return }
+        if (usbManager.hasPermission(device)) {
+            if (waitingForReconnect) executeDa1Phase(device)
+            else if (daBytes != null && payloadBytes != null && btnHandshake.isEnabled) executeKamakiriPhase(device)
+            return
+        }
         addLog("מבקש הרשאה...")
         val pi = PendingIntent.getBroadcast(this, 0, Intent(ACTION_USB_PERMISSION), PendingIntent.FLAG_MUTABLE)
         usbManager.requestPermission(device, pi)
     }
 
-    private fun executeFlow(device: UsbDevice) {
-        val dBytes = daBytes ?: return
+    private fun executeKamakiriPhase(device: UsbDevice) {
+        val pBytes = payloadBytes ?: return
         if (isRunning) return
         isRunning = true
-        tvStatus.text = "מריץ תהליך..."
+        tvStatus.text = "מריץ Kamakiri..."
         btnHandshake.isEnabled = false
 
         Thread {
             try {
-                val result = MtkBromConnection.runFullFlow(usbManager, device, dBytes) { addLog(it) }
+                val result = MtkBromConnection.runKamakiriPhase(usbManager, device, pBytes) { addLog(it) }
                 runOnUiThread {
-                    addLog("== סיום: $result")
+                    addLog("== סיום Kamakiri: $result")
+                    if (result == "KAMAKIRI_DONE") {
+                        waitingForReconnect = true
+                        tvStatus.text = "ממתין ל-reconnect..."
+                        addLog("ממתין לחיבור מחדש של המכשיר...")
+                    } else {
+                        tvStatus.text = result
+                        btnHandshake.isEnabled = true
+                    }
+                    isRunning = false
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    addLog("!! שגיאה: ${e.message}")
+                    tvStatus.text = "שגיאה: ${e.message}"
+                    isRunning = false
+                    btnHandshake.isEnabled = true
+                }
+            }
+        }.start()
+    }
+
+    private fun executeDa1Phase(device: UsbDevice) {
+        val dBytes = daBytes ?: return
+        if (isRunning) return
+        isRunning = true
+        tvStatus.text = "שולח DA1..."
+        btnHandshake.isEnabled = false
+
+        Thread {
+            try {
+                val result = MtkBromConnection.runDa1Phase(usbManager, device, dBytes) { addLog(it) }
+                runOnUiThread {
+                    addLog("== סיום DA1: $result")
                     tvStatus.text = result
                     isRunning = false
                     btnHandshake.isEnabled = true
