@@ -23,6 +23,7 @@ class MainActivity : AppCompatActivity() {
     private var daBytes: ByteArray? = null
     private var isRunning = false
     private var waitingForReconnect = false
+    private var currentPhase = "kamakiri" // "kamakiri" או "da1"
 
     private fun addLog(message: String) {
         runOnUiThread {
@@ -40,34 +41,36 @@ class MainActivity : AppCompatActivity() {
                     if (device != null && device.vendorId == 0x0E8D) {
                         val pidStr = String.format(Locale.US, "0x%04X", device.productId)
                         addLog(">> מכשיר התחבר. PID: $pidStr")
+                        
                         if (waitingForReconnect && device.productId == 0x0003) {
                             addLog(">>> BROM חזר! מנסה לתפוס...")
-                            waitingForReconnect = false
-                            if (usbManager.hasPermission(device)) {
-                                executeDa1Phase(device)
-                            } else {
-                                addLog("אין הרשאה, מבקש...")
-                                requestPermission(device, true)
-                            }
+                            requestPermission(device, "da1")
                         } else if (!waitingForReconnect && !isRunning) {
-                            requestPermission(device, false)
+                            requestPermission(device, "kamakiri")
                         }
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     addLog("<< מכשיר התנתק.")
-                    if (!waitingForReconnect && !isRunning) btnHandshake.isEnabled = true
                 }
                 ACTION_USB_PERMISSION -> {
                     val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && device != null) {
-                        if (waitingForReconnect) {
+                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    if (granted && device != null) {
+                        if (currentPhase == "da1") {
                             waitingForReconnect = false
                             executeDa1Phase(device)
                         } else {
                             executeKamakiriPhase(device)
                         }
-                    } else addLog("!! הרשאה נדחתה.")
+                    } else {
+                        addLog("!! הרשאה נדחתה.")
+                        // אם זו הרשאה ל-DA1, נשארים ב-waitingForReconnect כדי לנסות שוב
+                        if (currentPhase != "da1") {
+                            waitingForReconnect = false
+                            btnHandshake.isEnabled = true
+                        }
+                    }
                 }
             }
         }
@@ -81,7 +84,6 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
-        waitingForReconnect = false
 
         tvStatus.text = "טוען קבצים..."
         Thread {
@@ -109,21 +111,27 @@ class MainActivity : AppCompatActivity() {
         btnHandshake.setOnClickListener {
             addLog("--- מתחיל תהליך מלא ---")
             waitingForReconnect = false
+            currentPhase = "kamakiri"
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
-                if (usbManager.hasPermission(device)) executeKamakiriPhase(device)
-                else requestPermission(device, false)
+                requestPermission(device, "kamakiri")
             } else addLog("!! לא נמצא מכשיר.")
         }
     }
 
-    private fun requestPermission(device: UsbDevice, isDa1Phase: Boolean) {
+    private fun requestPermission(device: UsbDevice, phase: String) {
+        currentPhase = phase
         if (usbManager.hasPermission(device)) {
-            if (isDa1Phase) executeDa1Phase(device) else executeKamakiriPhase(device)
+            if (phase == "da1") {
+                waitingForReconnect = false
+                executeDa1Phase(device)
+            } else {
+                executeKamakiriPhase(device)
+            }
             return
         }
-        addLog("מבקש הרשאה...")
-        val pi = PendingIntent.getBroadcast(this, 0, Intent(ACTION_USB_PERMISSION), PendingIntent.FLAG_MUTABLE)
+        addLog("מבקש הרשאה (${if (phase == "da1") "DA1" else "Kamakiri"})...")
+        val pi = PendingIntent.getBroadcast(this, if (phase == "da1") 1 else 0, Intent(ACTION_USB_PERMISSION), PendingIntent.FLAG_MUTABLE)
         usbManager.requestPermission(device, pi)
     }
 
