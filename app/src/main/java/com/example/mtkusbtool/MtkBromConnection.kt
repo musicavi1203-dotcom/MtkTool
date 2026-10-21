@@ -3,7 +3,6 @@ package com.example.mtkusbtool
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.Locale
 
 object MtkBromConnection {
@@ -40,80 +39,48 @@ object MtkBromConnection {
         return -1
     }
 
-    // פונקציה חדשה לפרסור חכם - סורקת אחרי 0xdada
+    // פונקציה חדשה לפרסור - מחפשת את ה-hwcode ומדפיסה HEX
     fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
-        if (data.size < 0x6C) {
-            onProgress("!! DA קטן מדי (${data.size} בייט)")
-            return null
-        }
+        if (data.size < 0x6C) return null
 
-        // בדיקת חתימת MTK_DOWNLOAD_AGENT
-        val magicString = "MTK_DOWNLOAD_AGENT".toByteArray()
-        if (indexOf(data, magicString) == -1) {
-            onProgress("!! לא נמצאה מחרוזת MTK_DOWNLOAD_AGENT")
-            return null
-        }
-        onProgress("נמצאה מחרוזת MTK_DOWNLOAD_AGENT")
-
-        // סריקה אחרי כל מופע של 0xdada
-        val magicBytes = byteArrayOf(0xda.toByte(), 0xda.toByte())
+        // חיפוש הרצף של ה-hwcode 0x717 (Little Endian: 17 07 00 00)
+        val targetHwCodeBytes = byteArrayOf(0x17, 0x07, 0x00, 0x00)
         var searchOffset = 0
         var foundCount = 0
 
-        while (searchOffset < data.size - 20) {
-            val idx = indexOf(data.copyOfRange(searchOffset, data.size), magicBytes)
+        while (searchOffset < data.size - 4) {
+            val idx = indexOf(data.copyOfRange(searchOffset, data.size), targetHwCodeBytes)
             if (idx == -1) break
-            val magicOffset = searchOffset + idx
+            val hwCodeOffset = searchOffset + idx
+            foundCount++
 
-            // קריאת 20 הבייטים של הרשומה
-            val buf = ByteBuffer.wrap(data, magicOffset, 20).order(ByteOrder.LITTLE_ENDIAN)
-            val magic = buf.short.toInt() and 0xFFFF
-            val hwCode = buf.short.toInt() and 0xFFFF
-            val hwSubCode = buf.short.toInt() and 0xFFFF
-            val hwVersion = buf.short.toInt() and 0xFFFF
-            val swVersion = buf.short.toInt() and 0xFFFF
-            val reserved1 = buf.short.toInt() and 0xFFFF
-            val pagesize = buf.short.toInt() and 0xFFFF
-            val reserved3 = buf.short.toInt() and 0xFFFF
-            val entryRegionIndex = buf.short.toInt() and 0xFFFF
-            val entryRegionCount = buf.short.toInt() and 0xFFFF
-
-            if (hwCode == 0x717) {
-                onProgress("מצאתי את MT6761 (hwCode 0x717) ב-offset 0x${Integer.toHexString(magicOffset)}!")
-                val regions = mutableListOf<DaRegion>()
-                var regionOffset = magicOffset + 20
-                for (i in 0 until entryRegionCount) {
-                    if (regionOffset + 20 > data.size) break
-                    val rb = ByteBuffer.wrap(data, regionOffset, 20).order(ByteOrder.LITTLE_ENDIAN)
-                    val mBuf = rb.int
-                    val mLen = rb.int
-                    val mStartAddr = rb.int.toLong() and 0xFFFFFFFFL
-                    val mStartOffset = rb.int
-                    val mSigLen = rb.int
-                    regions.add(DaRegion(mBuf, mLen, mStartAddr, mStartOffset, mSigLen))
-                    onProgress("  Region $i: len=0x${Integer.toHexString(mLen)}, addr=0x${java.lang.Long.toHexString(mStartAddr)}, offset=0x${Integer.toHexString(mStartOffset)}")
-                    regionOffset += 20
-                }
-                if (regions.size >= 3) {
-                    val da1 = regions[1]
-                    val da2 = regions[2]
-                    onProgress("DA1: offset=0x${Integer.toHexString(da1.offset)}, len=0x${Integer.toHexString(da1.len)}, addr=0x${java.lang.Long.toHexString(da1.addr)}")
-                    onProgress("DA2: offset=0x${Integer.toHexString(da2.offset)}, len=0x${Integer.toHexString(da2.len)}, addr=0x${java.lang.Long.toHexString(da2.addr)}")
-                    return DaParts(
-                        data.copyOfRange(da1.offset, da1.offset + da1.len), da1.offset, da1.len, da1.addr,
-                        data.copyOfRange(da2.offset, da2.offset + da2.len), da2.offset, da2.len, da2.addr
-                    )
-                }
+            onProgress("נמצא hwcode 0x717 ב-offset 0x${Integer.toHexString(hwCodeOffset)}")
+            
+            // הדפסת 64 בייטים לפני ו-64 בייטים אחרי
+            val start = maxOf(0, hwCodeOffset - 64)
+            val end = minOf(data.size, hwCodeOffset + 64)
+            val sb = StringBuilder()
+            for (i in start until end) {
+                if (i == hwCodeOffset) sb.append(" >> ")
+                sb.append(String.format(Locale.US, "%02X", data[i]))
+                if ((i - start + 1) % 16 == 0 && i > start) sb.append("\n")
+                else sb.append(" ")
             }
+            onProgress("=== HEX סביב hwcode 0x717 (offset 0x${Integer.toHexString(hwCodeOffset)}) ===\n$sb")
 
-            searchOffset = magicOffset + 2 // ממשיכים לחפש הלאה
+            searchOffset = hwCodeOffset + 4
         }
 
-        onProgress("!! לא נמצאה רשומה לשבב 0x717 (MT6761) בקובץ")
-        return null
+        if (foundCount == 0) {
+            onProgress("!! לא נמצא הרצף 17 07 00 00 בקובץ")
+        } else {
+            onProgress("נמצאו $foundCount מופעים של hwcode 0x717. עצרנו כדי לראות את ה-HEX.")
+        }
+        
+        return null // עצירה כדי שנראה את ה-HEX
     }
 
-    // פונקציה ראשית לבדיקה (כרגע רק מפרסרת ומדפיסה)
+    // פונקציה ראשית לבדיקה
     fun runCarbonara(
         usbManager: UsbManager,
         device: UsbDevice,
@@ -126,7 +93,7 @@ object MtkBromConnection {
         val parts = parseDa(daBytes, onProgress)
         if (parts == null) {
             connection.close()
-            return "שגיאה: פירוק ה-DA נכשל."
+            return "שגיאה: פירוק ה-DA נכשל (עצרנו כדי לראות את ה-HEX)."
         }
 
         onProgress("הפירוק הצליח! DA1: ${parts.da1.size} בייט, DA2: ${parts.da2.size} בייט.")
