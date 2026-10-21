@@ -11,7 +11,6 @@ import java.util.Locale
 
 object MtkBromConnection {
 
-    // הוספנו sigLen לנתונים
     data class DaParts(val da1: ByteArray, val da1Addr: Long, val da1SigLen: Int, val da2: ByteArray, val da2Addr: Long, val da2SigLen: Int)
 
     fun parseDaV5(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
@@ -153,12 +152,24 @@ object MtkBromConnection {
     }
 
     fun runDa1Phase(usbManager: UsbManager, device: UsbDevice, daBytes: ByteArray, onProgress: (String) -> Unit): String {
-        val c = usbManager.openDevice(device) ?: return "שגיאה: פתיחת חיבור נכשלה."
+        // במקום השהיה ארוכה - ניסיונות חוזרים מהירים לפתוח את החיבור
+        var c: UsbDeviceConnection? = null
+        for (attempt in 1..30) {
+            c = usbManager.openDevice(device)
+            if (c != null) {
+                onProgress("חיבור נפתח בניסיון $attempt")
+                break
+            }
+            Thread.sleep(50) // 50 מ"ש בין ניסיון לניסיון
+        }
+        
+        val connection = c ?: return "שגיאה: לא הצלחנו לפתוח חיבור אחרי 30 ניסיונות."
+        
         var inEp: UsbEndpoint? = null
         var outEp: UsbEndpoint? = null
         for (i in 0 until device.interfaceCount) {
             val itf = device.getInterface(i)
-            if (c.claimInterface(itf, true)) {
+            if (connection.claimInterface(itf, true)) {
                 for (j in 0 until itf.endpointCount) {
                     val ep = itf.getEndpoint(j)
                     if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
@@ -168,61 +179,69 @@ object MtkBromConnection {
                 if (inEp != null && outEp != null) break
             }
         }
-        if (inEp == null || outEp == null) { c.close(); return "שגיאה: endpoints." }
+        if (inEp == null || outEp == null) { connection.close(); return "שגיאה: endpoints." }
         val iEp = inEp; val oEp = outEp
 
         onProgress("=== שלב ג': Handshake חדש ===")
-        if (!doHandshake(c, iEp, oEp, onProgress)) { c.close(); return "Handshake מחדש נכשל." }
+        if (!doHandshake(connection, iEp, oEp, onProgress)) { connection.close(); return "Handshake מחדש נכשל." }
 
         onProgress("=== שלב ד': שליחת DA1 ===")
-        val parts = parseDaV5(daBytes, onProgress) ?: run { c.close(); return "פירוס נכשל." }
+        val parts = parseDaV5(daBytes, onProgress) ?: run { connection.close(); return "פירוס נכשל." }
         
         onProgress("DA1: ${parts.da1.size} בייט, addr=0x${java.lang.Long.toHexString(parts.da1Addr)}, sigLen=${parts.da1SigLen}")
         
-        if (c.bulkTransfer(oEp, byteArrayOf(0xD7.toByte()), 1, 2000) < 0) { c.close(); return "0xD7 נכשל." }
-        val ack1 = ByteArray(1); c.bulkTransfer(iEp, ack1, 1, 2000)
+        if (connection.bulkTransfer(oEp, byteArrayOf(0xD7.toByte()), 1, 2000) < 0) { connection.close(); return "0xD7 נכשל." }
+        val ack1 = ByteArray(1); connection.bulkTransfer(iEp, ack1, 1, 2000)
         if (ack1[0] != 0xD8.toByte()) {
-            c.close(); return "0xD7 ack=0x${String.format(Locale.US, "%02X", ack1[0])}"
+            connection.close(); return "0xD7 ack=0x${String.format(Locale.US, "%02X", ack1[0])}"
         }
         onProgress("0xD7 אושר! (0xD8)")
 
-        // שימוש ב-sigLen האמיתי
-        c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
-        c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1.size).array(), 4, 2000)
-        c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1SigLen).array(), 4, 2000)
+        // שליחת כתובת + קריאת הד
+        val addrBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array()
+        connection.bulkTransfer(oEp, addrBytes, 4, 2000)
+        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
-        val ack2 = ByteArray(2); c.bulkTransfer(iEp, ack2, 2, 2000)
-        val ack2Short = ByteBuffer.wrap(ack2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
-        if (ack2Short == 0x1D0D) { c.close(); return "SLA required (0x1D0D)" }
-        if (ack2Short != 0xD9) { c.close(); return "ack=0x${String.format(Locale.US, "%04X", ack2Short)}" }
-        onProgress("גודל אושר! שולח נתונים...")
+        // שליחת גודל + קריאת הד
+        val lenBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1.size).array()
+        connection.bulkTransfer(oEp, lenBytes, 4, 2000)
+        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
+        
+        // שליחת siglen + קריאת הד
+        val sigBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1SigLen).array()
+        connection.bulkTransfer(oEp, sigBytes, 4, 2000)
+        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
+        
+        onProgress("פרמטרים נשלחו. מתחיל להעביר נתונים...")
 
+        // שליחת נתונים
         var offset = 0
         while (offset < parts.da1.size) {
             val len = minOf(512, parts.da1.size - offset)
-            c.bulkTransfer(oEp, parts.da1.copyOfRange(offset, offset + len), len, 2000)
+            connection.bulkTransfer(oEp, parts.da1.copyOfRange(offset, offset + len), len, 2000)
             offset += len
             if (offset % (512 * 40) == 0) onProgress("DA1: ${(offset * 100) / parts.da1.size}%")
         }
 
-        c.bulkTransfer(oEp, calcXor(parts.da1), 2, 2000)
-        val finalAck = ByteArray(1); c.bulkTransfer(iEp, finalAck, 1, 2000)
+        // שליחת checksum + קריאת אישור סופי
+        connection.bulkTransfer(oEp, calcXor(parts.da1), 2, 2000)
+        val finalAck = ByteArray(1); connection.bulkTransfer(iEp, finalAck, 1, 2000)
         if (finalAck[0] != 0x5A.toByte() && finalAck[0] != 0x5F.toByte()) {
-            c.close(); return "final ack=0x${String.format(Locale.US, "%02X", finalAck[0])}"
+            connection.close(); return "final ack=0x${String.format(Locale.US, "%02X", finalAck[0])}"
         }
         onProgress("DA1 נשלח בהצלחה!")
 
         onProgress("=== שלב ה': קפיצה ל-DA1 ===")
-        c.bulkTransfer(oEp, byteArrayOf(0xD5.toByte()), 1, 2000)
-        c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
+        connection.bulkTransfer(oEp, byteArrayOf(0xD5.toByte()), 1, 2000)
+        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
         
-        val sync = ByteArray(1); c.bulkTransfer(iEp, sync, 1, 2000)
+        val sync = ByteArray(1); connection.bulkTransfer(iEp, sync, 1, 2000)
         if (sync[0] != 0xC0.toByte()) {
-            c.close(); return "sync=0x${String.format(Locale.US, "%02X", sync[0])}"
+            connection.close(); return "sync=0x${String.format(Locale.US, "%02X", sync[0])}"
         }
         onProgress("DA1 רץ! (0xC0 התקבל)")
 
-        c.close()
+        connection.close()
         return "הצלחה! DA1 נשלח ורץ."
     }
 }
