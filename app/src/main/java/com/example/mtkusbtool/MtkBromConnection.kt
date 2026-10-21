@@ -149,13 +149,9 @@ object MtkBromConnection {
         var c: UsbDeviceConnection? = null
         for (attempt in 1..30) {
             c = usbManager.openDevice(device)
-            if (c != null) {
-                onProgress("חיבור נפתח בניסיון $attempt")
-                break
-            }
+            if (c != null) { onProgress("חיבור נפתח בניסיון $attempt"); break }
             Thread.sleep(50)
         }
-        
         val connection = c ?: return "שגיאה: לא הצלחנו לפתוח חיבור."
         
         var inEp: UsbEndpoint? = null
@@ -183,34 +179,31 @@ object MtkBromConnection {
         
         onProgress("DA1: ${parts.da1.size} בייט, addr=0x${java.lang.Long.toHexString(parts.da1Addr)}, sigLen=${parts.da1SigLen}")
         
-        // 1. שליחת 0xD7 + קריאת echo (בייט אחד)
+        // 1. 0xD7 + echo (1 בייט)
         if (connection.bulkTransfer(oEp, byteArrayOf(0xD7.toByte()), 1, 2000) < 0) { connection.close(); return "0xD7 נכשל." }
-        val cmdEcho = ByteArray(1)
-        connection.bulkTransfer(iEp, cmdEcho, 1, 2000)
-        if (cmdEcho[0] != 0xD8.toByte()) { connection.close(); return "0xD7 ack=0x${String.format(Locale.US, "%02X", cmdEcho[0])}" }
-        onProgress("0xD7 אושר! (0xD8)")
+        connection.bulkTransfer(iEp, ByteArray(1), 1, 2000)
         
-        // 2. שליחת addr (LE) + קריאת echo (4 בייטים)
+        // 2. addr (LE) + echo (4 בייטים)
         connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
-        // 3. שליחת size (LE) + קריאת echo (4 בייטים)
+        // 3. size (LE) + echo (4 בייטים)
         connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1.size).array(), 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
-        // 4. שליחת siglen (LE) + קריאת echo (4 בייטים)
+        // 4. siglen (LE) + echo (4 בייטים)
         connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1SigLen).array(), 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
-        // 5. קריאת 2 בייטים ack (LE) - אמור להיות 0xD9
-        val ackBuf = ByteArray(2)
-        connection.bulkTransfer(iEp, ackBuf, 2, 2000)
-        val ackShort = ByteBuffer.wrap(ackBuf).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
-        if (ackShort == 0x1D0D) { connection.close(); return "SLA required (0x1D0D)" }
-        if (ackShort != 0xD9) { connection.close(); return "ack=0x${String.format(Locale.US, "%04X", ackShort)}" }
-        onProgress("פרמטרים אושרו. מתחיל להעביר נתונים...")
+        // 5. קריאת 4 בייטים status (LE) - כמו rdword() ב-mtkclient
+        val statusBuf = ByteArray(4)
+        connection.bulkTransfer(iEp, statusBuf, 4, 2000)
+        val status = ByteBuffer.wrap(statusBuf).order(ByteOrder.LITTLE_ENDIAN).int
+        if (status == 0x1D0D) { connection.close(); return "SLA required (0x1D0D)" }
+        if (status > 0xFF) { connection.close(); return "status=0x${String.format(Locale.US, "%08X", status)}" }
+        onProgress("פרמטרים אושרו (status=0x${String.format(Locale.US, "%08X", status)}). מתחיל להעביר נתונים...")
 
-        // 6. שליחת נתונים ב-512 בייטים + echo מלא של כל chunk
+        // 6. שליחת נתונים ב-512 בייטים + echo מלא
         var offset = 0
         val chunkSize = 512
         var lastProgress = -10
@@ -237,19 +230,32 @@ object MtkBromConnection {
         }
         onProgress("כל הנתונים נשלחו בהצלחה!")
 
-        // 7. שליחת checksum (XOR של 16 בייט)
+        // 7. checksum = סכום של 16-bit words (כמו ב-mtkclient)
         var checksum = 0
-        for (b in parts.da1) checksum = checksum xor (b.toInt() and 0xFF)
+        var i = 0
+        while (i + 1 < parts.da1.size) {
+            checksum += ((parts.da1[i].toInt() and 0xFF) or ((parts.da1[i + 1].toInt() and 0xFF) shl 8))
+            i += 2
+        }
+        if (i < parts.da1.size) {
+            checksum += parts.da1[i].toInt() and 0xFF
+        }
+        checksum = checksum and 0xFFFF
+        onProgress("checksum = 0x${String.format(Locale.US, "%04X", checksum)}")
+        
+        // שליחת checksum (2 בייטים LE)
         connection.bulkTransfer(oEp, ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(checksum.toShort()).array(), 2, 2000)
         
-        // 8. קריאת echo של checksum (2 בייטים) - זה מה שחסר!
+        // 8. קריאת echo של checksum (2 בייטים)
         connection.bulkTransfer(iEp, ByteArray(2), 2, 2000)
         
-        // 9. קריאת final ack (1 בייט)
-        val finalAck = ByteArray(1)
-        val finalRead = connection.bulkTransfer(iEp, finalAck, 1, 2000)
-        if (finalRead > 0 && finalAck[0] != 0x5A.toByte() && finalAck[0] != 0x5F.toByte()) {
-            onProgress("final ack=0x${String.format(Locale.US, "%02X", finalAck[0])} (ממשיך בכל זאת)")
+        // 9. קריאת final status (2 בייטים LE)
+        val finalStatusBuf = ByteArray(2)
+        connection.bulkTransfer(iEp, finalStatusBuf, 2, 2000)
+        val finalStatus = ByteBuffer.wrap(finalStatusBuf).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+        onProgress("final status=0x${String.format(Locale.US, "%04X", finalStatus)}")
+        if (finalStatus != 0x5A && finalStatus != 0x5F && finalStatus != 0x00) {
+            connection.close(); return "final status=0x${String.format(Locale.US, "%04X", finalStatus)}"
         }
         onProgress("DA1 נשלח בהצלחה!")
 
