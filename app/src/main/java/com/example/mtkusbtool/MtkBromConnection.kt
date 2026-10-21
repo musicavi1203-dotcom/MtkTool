@@ -195,16 +195,15 @@ object MtkBromConnection {
         connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1SigLen).array(), 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
-        // 5. קריאת 2 בייטי ack (LE) - כמו ב-94%
+        // 5. קריאת 2 בייטי ack - לא חוסמים על אף ערך חוץ מ-1D0D!
         val ackBuf = ByteArray(2)
-        connection.bulkTransfer(iEp, ackBuf, 2, 2000)
-        val ackShort = ByteBuffer.wrap(ackBuf).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+        val ackRead = connection.bulkTransfer(iEp, ackBuf, 2, 2000)
+        val ackShort = if (ackRead >= 2) ByteBuffer.wrap(ackBuf).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF else -1
+        onProgress("ack=${if (ackShort >= 0) "0x${String.format(Locale.US, "%04X", ackShort)}" else "אין"} - ממשיך בכל מקרה")
+        
         if (ackShort == 0x1D0D) { connection.close(); return "SLA required (0x1D0D)" }
-        if (ackShort != 0xD9) { connection.close(); return "ack=0x${String.format(Locale.US, "%04X", ackShort)}" }
-        onProgress("פרמטרים אושרו (0xD9). מתחיל להעביר נתונים...")
 
         // 6. שליחת נתונים ב-512 בייטים + echo מלא
-        // ה-chunk האחרון מרופד ל-512 בייטים עם אפסים
         var offset = 0
         val chunkSize = 512
         var lastProgress = -10
@@ -213,7 +212,6 @@ object MtkBromConnection {
             val remaining = parts.da1.size - offset
             val len = minOf(chunkSize, remaining)
             
-            // ריפוד: אם len < chunkSize, מרפדים לאפסים
             val chunk = if (len < chunkSize) {
                 val padded = ByteArray(chunkSize)
                 System.arraycopy(parts.da1, offset, padded, 0, len)
@@ -227,7 +225,6 @@ object MtkBromConnection {
                 connection.close(); return "שגיאה: שליחת נתונים נכשלה ב-$offset."
             }
             
-            // קריאת echo מלא של 512 בייטים
             val echoBuf = ByteArray(chunkSize)
             val echoRead = connection.bulkTransfer(iEp, echoBuf, chunkSize, 5000)
             if (echoRead != chunkSize) {
@@ -244,26 +241,19 @@ object MtkBromConnection {
         }
         onProgress("כל הנתונים נשלחו ($chunksSent chunks)")
 
-        // 7. checksum XOR (על הנתונים המקוריים, לא המרופדים)
+        // 7. checksum XOR
         var checksum = 0
         for (b in parts.da1) checksum = checksum xor (b.toInt() and 0xFF)
         onProgress("checksum = 0x${String.format(Locale.US, "%04X", checksum)}")
         connection.bulkTransfer(oEp, ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(checksum.toShort()).array(), 2, 2000)
         
-        // 8. אבחון: קריאת 16 בייטים אחרי checksum
+        // 8. אבחון
         val diagBuf = ByteArray(16)
         val diagRead = connection.bulkTransfer(iEp, diagBuf, 16, 2000)
         val diagHex = diagBuf.take(maxOf(0, diagRead)).joinToString(" ") { String.format(Locale.US, "%02X", it) }
         onProgress("אחרי checksum: $diagRead בייטים: $diagHex")
 
-        // 9. פרשנות
-        if (diagRead >= 1 && (diagBuf[0] == 0x5A.toByte() || diagBuf[0] == 0x5F.toByte())) {
-            onProgress("DA1 אושר! (0x5A/0x5F)")
-        } else {
-            onProgress("status לא ברור - ממשיך בכל זאת")
-        }
-
-        // 10. שלב ה': קפיצה ל-DA1
+        // 9. שלב ה': קפיצה ל-DA1
         onProgress("=== שלב ה': קפיצה ל-DA1 ===")
         connection.bulkTransfer(oEp, byteArrayOf(0xD5.toByte()), 1, 2000)
         connection.bulkTransfer(iEp, ByteArray(1), 1, 2000)
