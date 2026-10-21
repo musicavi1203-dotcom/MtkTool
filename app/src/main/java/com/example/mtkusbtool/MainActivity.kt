@@ -106,7 +106,7 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                val result = MtkBromConnection.runCarbonara(usbManager, device, dBytes) { addLog(it) }
+                val result = MtkBromConnection.runCarbonaraFlow(usbManager, device, dBytes) { addLog(it) }
                 runOnUiThread {
                     addLog("== סיום: $result")
                     tvStatus.text = result
