@@ -2,7 +2,6 @@ package com.example.mtkusbtool
 
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
-import java.nio.ByteBuffer
 import java.util.Locale
 
 object MtkBromConnection {
@@ -39,45 +38,62 @@ object MtkBromConnection {
         return -1
     }
 
-    // פונקציה חדשה לפרסור - מחפשת את ה-hwcode ומדפיסה HEX
+    // פונקציה חדשה לניתוח הקובץ - HEX, חיפוש טקסט, בדיקת דחיסה ואנטרופיה
     fun parseDa(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
-        if (data.size < 0x6C) return null
+        if (data.size < 0x100) {
+            onProgress("!! DA קטן מדי")
+            return null
+        }
 
-        // חיפוש הרצף של ה-hwcode 0x717 (Little Endian: 17 07 00 00)
-        val targetHwCodeBytes = byteArrayOf(0x17, 0x07, 0x00, 0x00)
-        var searchOffset = 0
-        var foundCount = 0
+        // 1. הדפסת 128 הבייטים הראשונים (הכותרת)
+        onProgress("--- 128 בייטים ראשונים (Header) ---")
+        val sb = StringBuilder()
+        for (i in 0 until 128) {
+            sb.append(String.format(Locale.US, "%02X", data[i]))
+            if ((i + 1) % 16 == 0) sb.append("\n") else sb.append(" ")
+        }
+        onProgress(sb.toString())
 
-        while (searchOffset < data.size - 4) {
-            val idx = indexOf(data.copyOfRange(searchOffset, data.size), targetHwCodeBytes)
-            if (idx == -1) break
-            val hwCodeOffset = searchOffset + idx
-            foundCount++
-
-            onProgress("נמצא hwcode 0x717 ב-offset 0x${Integer.toHexString(hwCodeOffset)}")
-            
-            // הדפסת 64 בייטים לפני ו-64 בייטים אחרי
-            val start = maxOf(0, hwCodeOffset - 64)
-            val end = minOf(data.size, hwCodeOffset + 64)
-            val sb = StringBuilder()
-            for (i in start until end) {
-                if (i == hwCodeOffset) sb.append(" >> ")
-                sb.append(String.format(Locale.US, "%02X", data[i]))
-                if ((i - start + 1) % 16 == 0 && i > start) sb.append("\n")
-                else sb.append(" ")
+        // 2. חיפוש מחרוזות טקסטואליות
+        onProgress("--- חיפוש מחרוזות טקסטואליות ---")
+        val strings = listOf("MT6761", "6761", "0x717", "MTK_DA_v6", "MTK_DOWNLOAD_AGENT")
+        for (s in strings) {
+            val bytes = s.toByteArray()
+            val idx = indexOf(data, bytes)
+            if (idx != -1) {
+                onProgress("נמצאה המחרוזת \"$s\" ב-offset 0x${Integer.toHexString(idx)}")
+            } else {
+                onProgress("המחרוזת \"$s\" לא נמצאה")
             }
-            onProgress("=== HEX סביב hwcode 0x717 (offset 0x${Integer.toHexString(hwCodeOffset)}) ===\n$sb")
-
-            searchOffset = hwCodeOffset + 4
         }
 
-        if (foundCount == 0) {
-            onProgress("!! לא נמצא הרצף 17 07 00 00 בקובץ")
+        // 3. בדיקת חתימת דחיסה (ZIP / GZIP)
+        onProgress("--- בדיקת דחיסה ---")
+        if (data[0] == 0x50.toByte() && data[1] == 0x4B.toByte()) { // "PK"
+            onProgress("!! הקובץ נראה כמו ZIP (דחוס)")
+        } else if (data[0] == 0x1F.toByte() && data[1] == 0x8B.toByte()) {
+            onProgress("!! הקובץ נראה כמו GZIP (דחוס)")
         } else {
-            onProgress("נמצאו $foundCount מופעים של hwcode 0x717. עצרנו כדי לראות את ה-HEX.")
+            onProgress("הקובץ לא נראה דחוס (ZIP/GZIP)")
         }
-        
-        return null // עצירה כדי שנראה את ה-HEX
+
+        // 4. בדיקת אנטרופיה (הצפנה)
+        onProgress("--- בדיקת אנטרופיה (הצפנה) ---")
+        val counts = IntArray(256)
+        for (b in data) {
+            counts[b.toInt() and 0xFF]++
+        }
+        var entropy = 0.0
+        val len = data.size.toDouble()
+        for (c in counts) {
+            if (c > 0) {
+                val p = c / len
+                entropy -= p * (Math.log(p) / Math.log(2.0))
+            }
+        }
+        onProgress("אנטרופיה: ${String.format(Locale.US, "%.2f", entropy)} (0-8. אם >7.5, ייתכן שהקובץ מוצפן או דחוס)")
+
+        return null // עצירה כדי שנראה את הניתוח
     }
 
     // פונקציה ראשית לבדיקה
@@ -89,15 +105,14 @@ object MtkBromConnection {
     ): String {
         val connection = usbManager.openDevice(device) ?: return "שגיאה: פתיחת חיבור נכשלה."
 
-        onProgress("=== שלב 1: פירוק ה-DA ===")
+        onProgress("=== שלב 1: ניתוח ה-DA ===")
         val parts = parseDa(daBytes, onProgress)
         if (parts == null) {
             connection.close()
-            return "שגיאה: פירוק ה-DA נכשל (עצרנו כדי לראות את ה-HEX)."
+            return "שגיאה: ניתוח ה-DA הסתיים (עצרנו כדי לראות את הנתונים)."
         }
 
-        onProgress("הפירוק הצליח! DA1: ${parts.da1.size} בייט, DA2: ${parts.da2.size} בייט.")
         connection.close()
-        return "הצלחה בפירוק."
+        return "הצלחה."
     }
 }
