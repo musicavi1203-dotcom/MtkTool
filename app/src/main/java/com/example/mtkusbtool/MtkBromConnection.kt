@@ -193,17 +193,17 @@ object MtkBromConnection {
             connection.close(); return "0xD7 נכשל."
         }
         
-        // 2. קריאת 2 בייטים - אמורים להיות 0x0000
-        val resp = ByteArray(2)
-        val respRead = connection.bulkTransfer(iEp, resp, 2, 2000)
-        val respShort = if (respRead >= 2) ((resp[1].toInt() and 0xFF) shl 8) or (resp[0].toInt() and 0xFF) else -1
-        onProgress("תגובה ל-SEND_DA: $respRead בייטים, status=0x${String.format(Locale.US, "%04X", respShort)}")
+        // 2. קריאת 8 בייטים לצורך אבחון
+        val resp = ByteArray(8)
+        val respRead = connection.bulkTransfer(iEp, resp, 8, 2000)
+        val respHex = resp.take(maxOf(0, respRead)).joinToString(" ") { String.format(Locale.US, "%02X", it) }
+        onProgress("תגובה ל-SEND_DA: $respRead בייטים: $respHex")
         
-        if (respShort != 0x0000) {
-            connection.close(); return "SEND_DA נדחה: 0x${String.format(Locale.US, "%04X", respShort)}"
+        if (respRead < 2) {
+            connection.close()
+            return "תגובה קצרה מדי: $respHex"
         }
-        onProgress("SEND_DA אושר! (0x0000) מתחיל להעביר נתונים...")
-
+        
         // 3. שליחת נתונים ב-512 בייטים + echo מלא
         var offset = 0
         val chunkSize = 512
