@@ -179,7 +179,7 @@ object MtkBromConnection {
         
         onProgress("DA1: ${parts.da1.size} בייט, addr=0x${java.lang.Long.toHexString(parts.da1Addr)}, sigLen=${parts.da1SigLen}")
         
-        // 1. 0xD7 + echo (1 בייט)
+        // 1. SEND_DA (0xD7) + echo (1 בייט)
         if (connection.bulkTransfer(oEp, byteArrayOf(0xD7.toByte()), 1, 2000) < 0) { connection.close(); return "0xD7 נכשל." }
         connection.bulkTransfer(iEp, ByteArray(1), 1, 2000)
         
@@ -195,27 +195,19 @@ object MtkBromConnection {
         connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1SigLen).array(), 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
-        // 5. קריאת 2 בייטי ack - לא חוסמים על אף ערך חוץ מ-1D0D!
-        val ackBuf = ByteArray(2)
-        val ackRead = connection.bulkTransfer(iEp, ackBuf, 2, 2000)
-        val ackShort = if (ackRead >= 2) ByteBuffer.wrap(ackBuf).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF else -1
-        onProgress("ack=${if (ackShort >= 0) "0x${String.format(Locale.US, "%04X", ackShort)}" else "אין"} - ממשיך בכל מקרה")
-        
-        if (ackShort == 0x1D0D) { connection.close(); return "SLA required (0x1D0D)" }
+        // אין קריאת ack! לפי הפורומים, המכשיר לא מחזיר אישור כאן
+        onProgress("פרמטרים נשלחו. מתחיל להעביר נתונים (בלי ack)...")
 
-        // 6. שליחת נתונים ב-512 בייטים + echo מלא
+        // 5. שליחת נתונים ב-512 בייטים + echo מלא
         var offset = 0
         val chunkSize = 512
         var lastProgress = -10
         var chunksSent = 0
         while (offset < parts.da1.size) {
-            val remaining = parts.da1.size - offset
-            val len = minOf(chunkSize, remaining)
-            
+            val len = minOf(chunkSize, parts.da1.size - offset)
             val chunk = if (len < chunkSize) {
                 val padded = ByteArray(chunkSize)
                 System.arraycopy(parts.da1, offset, padded, 0, len)
-                onProgress("chunk אחרון (${len} בייטים) מרופד ל-512")
                 padded
             } else {
                 parts.da1.copyOfRange(offset, offset + len)
@@ -241,33 +233,37 @@ object MtkBromConnection {
         }
         onProgress("כל הנתונים נשלחו ($chunksSent chunks)")
 
-        // 7. checksum XOR
+        // 6. checksum XOR
         var checksum = 0
         for (b in parts.da1) checksum = checksum xor (b.toInt() and 0xFF)
         onProgress("checksum = 0x${String.format(Locale.US, "%04X", checksum)}")
         connection.bulkTransfer(oEp, ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(checksum.toShort()).array(), 2, 2000)
         
-        // 8. אבחון
+        // אבחון: קריאת 16 בייטים אחרי checksum
         val diagBuf = ByteArray(16)
         val diagRead = connection.bulkTransfer(iEp, diagBuf, 16, 2000)
         val diagHex = diagBuf.take(maxOf(0, diagRead)).joinToString(" ") { String.format(Locale.US, "%02X", it) }
         onProgress("אחרי checksum: $diagRead בייטים: $diagHex")
 
-        // 9. שלב ה': קפיצה ל-DA1
-        onProgress("=== שלב ה': קפיצה ל-DA1 ===")
+        // 7. JUMP_DA (0xD5) + echo (1 בייט) + addr (LE) + echo (4 בייטים)
+        onProgress("=== שלב ה': JUMP_DA ===")
         connection.bulkTransfer(oEp, byteArrayOf(0xD5.toByte()), 1, 2000)
         connection.bulkTransfer(iEp, ByteArray(1), 1, 2000)
         connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
+        // 8. המתנה ל-sync 0xC0
+        onProgress("ממתין ל-sync 0xC0...")
         val syncBuf = ByteArray(1)
-        connection.bulkTransfer(iEp, syncBuf, 1, 5000)
-        if (syncBuf[0] != 0xC0.toByte()) {
-            connection.close(); return "sync=0x${String.format(Locale.US, "%02X", syncBuf[0])}"
+        val syncRead = connection.bulkTransfer(iEp, syncBuf, 1, 10000)
+        if (syncRead > 0 && syncBuf[0] == 0xC0.toByte()) {
+            onProgress("DA1 רץ! (0xC0 התקבל)")
+            connection.close()
+            return "הצלחה! DA1 נשלח ורץ."
+        } else {
+            val hex = if (syncRead > 0) String.format(Locale.US, "0x%02X", syncBuf[0]) else "אין"
+            connection.close()
+            return "sync=0x$hex (לא 0xC0)"
         }
-        onProgress("DA1 רץ! (0xC0 התקבל)")
-
-        connection.close()
-        return "הצלחה! DA1 נשלח ורץ."
     }
 }
