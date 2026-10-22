@@ -20,7 +20,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     private var payloadBytes: ByteArray? = null
+    
+    // רשימת קבצי ה-DA - ללא קידומת da/ כי הם ישירות ב-assets
+    private val daFiles = listOf(
+        "DA_SWSEC.1b523f48.bin",
+        "DA_SWSEC_CRYPTO20.5bed6638.bin",
+        "DA_PL_CRYPTO20.997123da.bin",
+        "DA_PL_c95b62a2.bin",
+        "MTK_AllInOne_DA.1d5fdec4.bin"
+    )
+    private var currentDaIndex = 0
     private var daBytes: ByteArray? = null
+
     private var isRunning = false
     private var waitingForReconnect = false
     private var currentPhase = "kamakiri" // "kamakiri" או "da1"
@@ -65,7 +76,6 @@ class MainActivity : AppCompatActivity() {
                         }
                     } else {
                         addLog("!! הרשאה נדחתה.")
-                        // אם זו הרשאה ל-DA1, נשארים ב-waitingForReconnect כדי לנסות שוב
                         if (currentPhase != "da1") {
                             waitingForReconnect = false
                             btnHandshake.isEnabled = true
@@ -91,9 +101,9 @@ class MainActivity : AppCompatActivity() {
                 addLog("טוען generic_patcher_payload.bin...")
                 assets.open("generic_patcher_payload.bin").use { payloadBytes = it.readBytes() }
                 addLog("נטען Payload: ${payloadBytes?.size} בייט.")
-                addLog("טוען MTK_DA_V5.bin...")
-                assets.open("MTK_DA_V5.bin").use { daBytes = it.readBytes() }
-                addLog("נטען DA: ${daBytes?.size} בייט.")
+                
+                loadNextDaFile() // טוען את הקובץ הראשון
+                
                 runOnUiThread { tvStatus.text = "מוכן. חבר את המכשיר (כבוי)."; btnHandshake.isEnabled = true }
             } catch (e: Exception) {
                 addLog("!! שגיאה: ${e.message}")
@@ -109,13 +119,29 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
 
         btnHandshake.setOnClickListener {
-            addLog("--- מתחיל תהליך מלא ---")
+            addLog("--- מתחיל תהליך מלא (קובץ DA נוכחי: ${daFiles[currentDaIndex]}) ---")
             waitingForReconnect = false
             currentPhase = "kamakiri"
             val device = usbManager.deviceList.values.firstOrNull { it.vendorId == 0x0E8D }
             if (device != null) {
                 requestPermission(device, "kamakiri")
             } else addLog("!! לא נמצא מכשיר.")
+        }
+    }
+
+    private fun loadNextDaFile() {
+        if (currentDaIndex >= daFiles.size) {
+            addLog("!! כל קבצי ה-DA נוסו ונכשלו. המכשיר כנראה חסום ב-eFuse.")
+            return
+        }
+        val fileName = daFiles[currentDaIndex]
+        addLog("טוען קובץ DA: $fileName")
+        try {
+            assets.open(fileName).use { daBytes = it.readBytes() }
+            addLog("נטען DA: ${daBytes?.size} בייט.")
+        } catch (e: Exception) {
+            addLog("!! שגיאה בטעינת $fileName: ${e.message}")
+            daBytes = null
         }
     }
 
@@ -169,20 +195,45 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executeDa1Phase(device: UsbDevice) {
-        val dBytes = daBytes ?: return
+        val dBytes = daBytes
+        if (dBytes == null) {
+            addLog("!! אין קובץ DA טעון.")
+            isRunning = false
+            btnHandshake.isEnabled = true
+            return
+        }
         if (isRunning) return
         isRunning = true
-        tvStatus.text = "שולח DA1..."
+        tvStatus.text = "שולח DA1 (${daFiles[currentDaIndex]})..."
         btnHandshake.isEnabled = false
 
         Thread {
             try {
                 val result = MtkBromConnection.runDa1Phase(usbManager, device, dBytes) { addLog(it) }
                 runOnUiThread {
-                    addLog("== סיום DA1: $result")
-                    tvStatus.text = result
+                    addLog("== סיום DA1 (${daFiles[currentDaIndex]}): $result")
+                    
+                    if (result.contains("0xD8")) {
+                        addLog(">>> הקובץ הנוכחי נכשל. מנסה את הקובץ הבא...")
+                        currentDaIndex++
+                        if (currentDaIndex < daFiles.size) {
+                            loadNextDaFile()
+                            waitingForReconnect = true
+                            tvStatus.text = "נכשל. ממתין לחיבור מחדש לקובץ הבא..."
+                            addLog("אנא נתק וחבר מחדש את המכשיר.")
+                        } else {
+                            tvStatus.text = "כל הקבצים נכשלו."
+                            addLog("!! כל קבצי ה-DA נוסו. המכשיר חסום.")
+                            btnHandshake.isEnabled = true
+                        }
+                    } else if (result.contains("הצלחה")) {
+                        tvStatus.text = result
+                        btnHandshake.isEnabled = true
+                    } else {
+                        tvStatus.text = result
+                        btnHandshake.isEnabled = true
+                    }
                     isRunning = false
-                    btnHandshake.isEnabled = true
                 }
             } catch (e: Exception) {
                 runOnUiThread {
