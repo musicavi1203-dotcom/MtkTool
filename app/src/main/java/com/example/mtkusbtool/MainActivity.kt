@@ -21,7 +21,7 @@ class MainActivity : AppCompatActivity() {
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     private var payloadBytes: ByteArray? = null
     
-    // רשימת קבצי ה-DA - ללא קידומת da/ כי הם ישירות ב-assets
+    // רשימת קבצי ה-DA ישירות מתוך assets (ללא קידומת da/)
     private val daFiles = listOf(
         "DA_SWSEC.1b523f48.bin",
         "DA_SWSEC_CRYPTO20.5bed6638.bin",
@@ -213,7 +213,8 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     addLog("== סיום DA1 (${daFiles[currentDaIndex]}): $result")
                     
-                    if (result.contains("0xD8")) {
+                    // השינוי כאן: אם התוצאה לא מכילה "הצלחה", ננסה את הקובץ הבא
+                    if (!result.contains("הצלחה")) {
                         addLog(">>> הקובץ הנוכחי נכשל. מנסה את הקובץ הבא...")
                         currentDaIndex++
                         if (currentDaIndex < daFiles.size) {
@@ -226,9 +227,6 @@ class MainActivity : AppCompatActivity() {
                             addLog("!! כל קבצי ה-DA נוסו. המכשיר חסום.")
                             btnHandshake.isEnabled = true
                         }
-                    } else if (result.contains("הצלחה")) {
-                        tvStatus.text = result
-                        btnHandshake.isEnabled = true
                     } else {
                         tvStatus.text = result
                         btnHandshake.isEnabled = true
