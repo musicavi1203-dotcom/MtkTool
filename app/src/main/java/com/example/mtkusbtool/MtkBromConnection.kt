@@ -179,26 +179,32 @@ object MtkBromConnection {
         
         onProgress("DA1: ${parts.da1.size} בייט, addr=0x${java.lang.Long.toHexString(parts.da1Addr)}, sigLen=${parts.da1SigLen}")
         
-        // 1. SEND_DA (0xD7) + echo (1 בייט)
-        if (connection.bulkTransfer(oEp, byteArrayOf(0xD7.toByte()), 1, 2000) < 0) { connection.close(); return "0xD7 נכשל." }
-        connection.bulkTransfer(iEp, ByteArray(1), 1, 2000)
+        // 1. שליחת הודעה אחת: 0xD7 + addr + size + siglen (13 בייטים, BE)
+        val sendDaPacket = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
+            .put(0xD7.toByte())
+            .putInt(parts.da1Addr.toInt())
+            .putInt(parts.da1.size)
+            .putInt(parts.da1SigLen)
+            .array()
         
-        // 2. addr (LE) + echo (4 בייטים)
-        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
-        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
+        onProgress("שולח SEND_DA (13 בייטים): ${sendDaPacket.joinToString(" ") { String.format(Locale.US, "%02X", it) }}")
         
-        // 3. size (LE) + echo (4 בייטים)
-        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1.size).array(), 4, 2000)
-        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
+        if (connection.bulkTransfer(oEp, sendDaPacket, 13, 2000) < 0) {
+            connection.close(); return "0xD7 נכשל."
+        }
         
-        // 4. sigLen (LE) + echo (4 בייטים)
-        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1SigLen).array(), 4, 2000)
-        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
+        // 2. קריאת 2 בייטים - אמורים להיות 0x0000
+        val resp = ByteArray(2)
+        val respRead = connection.bulkTransfer(iEp, resp, 2, 2000)
+        val respShort = if (respRead >= 2) ((resp[1].toInt() and 0xFF) shl 8) or (resp[0].toInt() and 0xFF) else -1
+        onProgress("תגובה ל-SEND_DA: $respRead בייטים, status=0x${String.format(Locale.US, "%04X", respShort)}")
         
-        // אין קריאת ack! לפי הפורומים, המכשיר לא מחזיר אישור כאן
-        onProgress("פרמטרים נשלחו. מתחיל להעביר נתונים (בלי ack)...")
+        if (respShort != 0x0000) {
+            connection.close(); return "SEND_DA נדחה: 0x${String.format(Locale.US, "%04X", respShort)}"
+        }
+        onProgress("SEND_DA אושר! (0x0000) מתחיל להעביר נתונים...")
 
-        // 5. שליחת נתונים ב-512 בייטים + echo מלא
+        // 3. שליחת נתונים ב-512 בייטים + echo מלא
         var offset = 0
         val chunkSize = 512
         var lastProgress = -10
@@ -233,27 +239,26 @@ object MtkBromConnection {
         }
         onProgress("כל הנתונים נשלחו ($chunksSent chunks)")
 
-        // 6. checksum XOR
+        // 4. checksum XOR
         var checksum = 0
         for (b in parts.da1) checksum = checksum xor (b.toInt() and 0xFF)
         onProgress("checksum = 0x${String.format(Locale.US, "%04X", checksum)}")
         connection.bulkTransfer(oEp, ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(checksum.toShort()).array(), 2, 2000)
         
-        // אבחון: קריאת 16 בייטים אחרי checksum
+        // 5. אבחון
         val diagBuf = ByteArray(16)
         val diagRead = connection.bulkTransfer(iEp, diagBuf, 16, 2000)
         val diagHex = diagBuf.take(maxOf(0, diagRead)).joinToString(" ") { String.format(Locale.US, "%02X", it) }
         onProgress("אחרי checksum: $diagRead בייטים: $diagHex")
 
-        // 7. JUMP_DA (0xD5) + echo (1 בייט) + addr (LE) + echo (4 בייטים)
+        // 6. JUMP_DA (0xD5) + addr (5 בייטים, BE)
         onProgress("=== שלב ה': JUMP_DA ===")
-        connection.bulkTransfer(oEp, byteArrayOf(0xD5.toByte()), 1, 2000)
-        connection.bulkTransfer(iEp, ByteArray(1), 1, 2000)
-        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
-        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
+        val jumpPacket = ByteBuffer.allocate(5).order(ByteOrder.BIG_ENDIAN)
+            .put(0xD5.toByte())
+            .putInt(parts.da1Addr.toInt())
+            .array()
+        connection.bulkTransfer(oEp, jumpPacket, 5, 2000)
         
-        // 8. המתנה ל-sync 0xC0
-        onProgress("ממתין ל-sync 0xC0...")
         val syncBuf = ByteArray(1)
         val syncRead = connection.bulkTransfer(iEp, syncBuf, 1, 10000)
         if (syncRead > 0 && syncBuf[0] == 0xC0.toByte()) {
@@ -263,7 +268,7 @@ object MtkBromConnection {
         } else {
             val hex = if (syncRead > 0) String.format(Locale.US, "0x%02X", syncBuf[0]) else "אין"
             connection.close()
-            return "sync=0x$hex (לא 0xC0)"
+            return "sync=$hex (לא 0xC0)"
         }
     }
 }
