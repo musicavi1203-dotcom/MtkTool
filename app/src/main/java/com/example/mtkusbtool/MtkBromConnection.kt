@@ -204,7 +204,7 @@ object MtkBromConnection {
         }
         onProgress("SEND_DA אושר! (0xD8) מתחיל להעביר נתונים...")
 
-        // 3. שליחת נתונים ב-512 בייטים + echo מלא
+        // 3. שליחת נתונים ב-512 בייטים + קריאת בייט אישור אחד (0x5A)
         var offset = 0
         val chunkSize = 512
         var lastProgress = -10
@@ -223,17 +223,18 @@ object MtkBromConnection {
                 connection.close(); return "שגיאה: שליחת נתונים נכשלה ב-$offset."
             }
             
-            val echoBuf = ByteArray(chunkSize)
-            val echoRead = connection.bulkTransfer(iEp, echoBuf, chunkSize, 5000)
-            if (echoRead != chunkSize) {
-                connection.close(); return "שגיאה: echo נכשל ב-$offset (קיבלנו $echoRead מתוך $chunkSize)."
+            // קריאת בייט אישור אחד בלבד
+            val ack = ByteArray(1)
+            val ackRead = connection.bulkTransfer(iEp, ack, 1, 5000)
+            if (ackRead != 1) {
+                connection.close(); return "שגיאה: אין ack ב-$offset (קיבלנו $ackRead)"
             }
             
             offset += len
             chunksSent++
             val progress = (offset * 100) / parts.da1.size
             if (progress >= lastProgress + 10) {
-                onProgress("DA1: $progress% (chunk $chunksSent)")
+                onProgress("DA1: $progress% (chunk $chunksSent, ack=0x${String.format(Locale.US, "%02X", ack[0])})")
                 lastProgress = progress
             }
         }
