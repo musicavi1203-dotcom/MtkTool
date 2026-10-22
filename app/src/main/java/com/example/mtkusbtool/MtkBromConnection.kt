@@ -190,16 +190,25 @@ object MtkBromConnection {
             connection.close(); return "שגיאה: שליחת Header נכשלה."
         }
         
-        // קריאת ACK (בייט אחד) - מצפים ל-0xD8
+        // קריאת ACK (בייט אחד)
         val headerAck = ByteArray(1)
-        if (connection.bulkTransfer(iEp, headerAck, 1, 2000) != 1 || headerAck[0] != 0xD8.toByte()) {
-            connection.close(); return "שגיאה: Header לא אושר (קיבלנו 0x${String.format(Locale.US, "%02X", headerAck[0])})."
+        if (connection.bulkTransfer(iEp, headerAck, 1, 2000) != 1) {
+            connection.close(); return "שגיאה: לא התקבלה תגובה ל-Header."
         }
-        onProgress("SEND_DA אושר! (0xD8) מתחיל להעביר נתונים...")
+        
+        val ackHex = String.format(Locale.US, "0x%02X", headerAck[0])
+        if (headerAck[0] == 0xD8.toByte()) {
+            connection.close()
+            return "שגיאה: התקבל 0xD8. המכשיר עדיין דורש אימות SBC/SLA. ה-payload לא ביטל את האבטחה."
+        } else if (headerAck[0] != 0x5A.toByte()) {
+            connection.close(); return "שגיאה: Header לא אושר (קיבלנו $ackHex, צפינו ל-0x5A)."
+        }
+        
+        onProgress("SEND_DA אושר! (0x5A) מתחיל להעביר נתונים...")
 
         // 2. שליחת נתונים ב-4096 בייטים + קריאת ACK (0x5A)
         var offset = 0
-        val chunkSize = 0x1000 // 4096 - חייב להיות זהה ל-packetsize
+        val chunkSize = 0x1000 // 4096
         var lastProgress = -10
         
         while (offset < parts.da1.size) {
@@ -228,8 +237,8 @@ object MtkBromConnection {
         }
         onProgress("כל הנתונים נשלחו בהצלחה! ממתין ל-ACK סופי...")
 
-        // 3. השהיה קצרה ושליחת ACK סופי (0x5A) וקריאת ACK סופי (1 בייט)
-        Thread.sleep(500) // 0.5 שניות, כמו ב-mtkclient
+        // 3. השהיה קצרה ושליחת ACK סופי (0x5A) וקריאת ACK סופי
+        Thread.sleep(500)
         
         if (connection.bulkTransfer(oEp, byteArrayOf(0x5A.toByte()), 1, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת ACK סופי נכשלה."
@@ -248,7 +257,6 @@ object MtkBromConnection {
         }
         connection.bulkTransfer(iEp, ByteArray(1), 1, 2000) // echo
         
-        // addr ב-BE (לפי mtkclient pack(">I", address))
         connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000) // echo
         
