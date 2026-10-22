@@ -88,8 +88,8 @@ class MainActivity : AppCompatActivity() {
         tvStatus.text = "טוען קבצים..."
         Thread {
             try {
-                addLog("טוען mt6761_payload.bin...")
-                assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
+                addLog("טוען generic_patcher_payload.bin...")
+                assets.open("generic_patcher_payload.bin").use { payloadBytes = it.readBytes() }
                 addLog("נטען Payload: ${payloadBytes?.size} בייט.")
                 addLog("טוען MTK_DA_V5.bin...")
                 assets.open("MTK_DA_V5.bin").use { daBytes = it.readBytes() }
