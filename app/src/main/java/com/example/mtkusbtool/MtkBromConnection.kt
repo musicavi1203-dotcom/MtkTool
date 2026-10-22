@@ -193,17 +193,17 @@ object MtkBromConnection {
             connection.close(); return "0xD7 נכשל."
         }
         
-        // 2. קריאת 8 בייטים לצורך אבחון
-        val resp = ByteArray(8)
-        val respRead = connection.bulkTransfer(iEp, resp, 8, 2000)
-        val respHex = resp.take(maxOf(0, respRead)).joinToString(" ") { String.format(Locale.US, "%02X", it) }
-        onProgress("תגובה ל-SEND_DA: $respRead בייטים: $respHex")
+        // 2. קריאת 1 בייט - אמור להיות 0xD8
+        val ackBuf = ByteArray(1)
+        val ackRead = connection.bulkTransfer(iEp, ackBuf, 1, 2000)
+        val ackHex = if (ackRead > 0) String.format(Locale.US, "%02X", ackBuf[0]) else "אין"
+        onProgress("תגובה ל-SEND_DA: $ackRead בייטים: $ackHex")
         
-        if (respRead < 2) {
-            connection.close()
-            return "תגובה קצרה מדי: $respHex"
+        if (ackRead != 1 || ackBuf[0] != 0xD8.toByte()) {
+            connection.close(); return "ack=$ackHex (מצפה ל-0xD8)"
         }
-        
+        onProgress("SEND_DA אושר! (0xD8) מתחיל להעביר נתונים...")
+
         // 3. שליחת נתונים ב-512 בייטים + echo מלא
         var offset = 0
         val chunkSize = 512
@@ -266,7 +266,7 @@ object MtkBromConnection {
             connection.close()
             return "הצלחה! DA1 נשלח ורץ."
         } else {
-            val hex = if (syncRead > 0) String.format(Locale.US, "0x%02X", syncBuf[0]) else "אין"
+            val hex = if (syncRead > 0) String.format(Locale.US, "%02X", syncBuf[0]) else "אין"
             connection.close()
             return "sync=$hex (לא 0xC0)"
         }
