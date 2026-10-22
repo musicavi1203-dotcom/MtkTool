@@ -11,50 +11,6 @@ import java.util.Locale
 
 object MtkBromConnection {
 
-    data class DaParts(val da1: ByteArray, val da1Addr: Long, val da1SigLen: Int, val da2: ByteArray, val da2Addr: Long, val da2SigLen: Int)
-
-    fun parseDaV5(data: ByteArray, onProgress: (String) -> Unit): DaParts? {
-        if (data.size < 0x6C) return null
-        val countDa = ByteBuffer.wrap(data, 0x68, 4).order(ByteOrder.LITTLE_ENDIAN).int
-        val oldLdr = data.size > 0x6C + 0xD8 + 2 &&
-                data[0x6C + 0xD8] == 0xDA.toByte() &&
-                data[0x6C + 0xD8 + 1] == 0xDA.toByte()
-        val recordSize = if (oldLdr) 0xD8 else 0xDC
-        var offset = 0x6C
-        for (i in 0 until countDa) {
-            if (offset + recordSize > data.size) break
-            val buf = ByteBuffer.wrap(data, offset, recordSize).order(ByteOrder.LITTLE_ENDIAN)
-            val magic = buf.short.toInt() and 0xFFFF
-            val hwCode = buf.short.toInt() and 0xFFFF
-            val hwSub = buf.short.toInt() and 0xFFFF
-            val hwVer = buf.short.toInt() and 0xFFFF
-            buf.short; buf.short; buf.short; buf.short
-            val regionIdx = buf.short.toInt() and 0xFFFF
-            val regionCount = buf.short.toInt() and 0xFFFF
-            if (hwCode == 0x6761) {
-                val regions = mutableListOf<Triple<Int, Int, Long>>()
-                val sigLens = mutableListOf<Int>()
-                for (r in 0 until regionCount) {
-                    if (buf.remaining() < 20) break
-                    val mBuf = buf.int; val mLen = buf.int
-                    val mAddr = buf.int.toLong() and 0xFFFFFFFFL
-                    val mOffset = buf.int; val mSigLen = buf.int
-                    regions.add(Triple(mOffset, mLen, mAddr))
-                    sigLens.add(mSigLen)
-                }
-                if (regions.size >= 3) {
-                    val da1 = regions[1]; val da2 = regions[2]
-                    return DaParts(
-                        data.copyOfRange(da1.first, da1.first + da1.second), da1.third, sigLens[1],
-                        data.copyOfRange(da2.first, da2.first + da2.second), da2.third, sigLens[2]
-                    )
-                }
-            }
-            offset += recordSize
-        }
-        return null
-    }
-
     private fun doHandshake(c: UsbDeviceConnection, inEp: UsbEndpoint, outEp: UsbEndpoint, onProgress: (String) -> Unit): Boolean {
         val resp = ByteArray(1)
         onProgress("מנסה 0xA0 (BROM)...")
@@ -175,16 +131,17 @@ object MtkBromConnection {
         if (!doHandshake(connection, iEp, oEp, onProgress)) { connection.close(); return "Handshake מחדש נכשל." }
 
         onProgress("=== שלב ד': שליחת DA1 ===")
-        val parts = parseDaV5(daBytes, onProgress) ?: run { connection.close(); return "פירוס נכשל." }
         
-        onProgress("DA1: ${parts.da1.size} בייט, addr=0x${java.lang.Long.toHexString(parts.da1Addr)}, sigLen=${parts.da1SigLen}")
+        val da1Addr = 0x200000L
+        val sigLen = 256
+        onProgress("DA1: ${daBytes.size} בייט, addr=0x${java.lang.Long.toHexString(da1Addr)}, sigLen=$sigLen")
         
         // 1. שליחת Header מלא (13 בייטים) - D7 + addr + size + packetsize (הכל ב-BE)
         val headerBuf = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
         headerBuf.put(0xD7.toByte())
-        headerBuf.putInt(parts.da1Addr.toInt())    // addr
-        headerBuf.putInt(parts.da1.size)           // size
-        headerBuf.putInt(0x1000)                   // packetsize = 4096 (0x1000)
+        headerBuf.putInt(da1Addr.toInt())
+        headerBuf.putInt(daBytes.size)
+        headerBuf.putInt(0x1000) // packetsize 4096
         
         if (connection.bulkTransfer(oEp, headerBuf.array(), 13, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת Header נכשלה."
@@ -199,7 +156,7 @@ object MtkBromConnection {
         val ackHex = String.format(Locale.US, "0x%02X", headerAck[0])
         if (headerAck[0] == 0xD8.toByte()) {
             connection.close()
-            return "שגיאה: התקבל 0xD8. המכשיר עדיין דורש אימות SBC/SLA. ה-payload לא ביטל את האבטחה."
+            return "שגיאה: התקבל 0xD8. המכשיר דורש אימות SBC/SLA."
         } else if (headerAck[0] != 0x5A.toByte()) {
             connection.close(); return "שגיאה: Header לא אושר (קיבלנו $ackHex, צפינו ל-0x5A)."
         }
@@ -208,18 +165,17 @@ object MtkBromConnection {
 
         // 2. שליחת נתונים ב-4096 בייטים + קריאת ACK (0x5A)
         var offset = 0
-        val chunkSize = 0x1000 // 4096
+        val chunkSize = 0x1000
         var lastProgress = -10
         
-        while (offset < parts.da1.size) {
-            val len = minOf(chunkSize, parts.da1.size - offset)
-            val chunk = parts.da1.copyOfRange(offset, offset + len)
+        while (offset < daBytes.size) {
+            val len = minOf(chunkSize, daBytes.size - offset)
+            val chunk = daBytes.copyOfRange(offset, offset + len)
             
             if (connection.bulkTransfer(oEp, chunk, len, 5000) < 0) {
                 connection.close(); return "שגיאה: שליחת נתונים נכשלה ב-$offset."
             }
             
-            // קריאת ACK אחרי כל chunk
             val ackBuf = ByteArray(1)
             val ackRead = connection.bulkTransfer(iEp, ackBuf, 1, 5000)
             if (ackRead != 1 || ackBuf[0] != 0x5A.toByte()) {
@@ -229,7 +185,7 @@ object MtkBromConnection {
             }
             
             offset += len
-            val progress = (offset * 100) / parts.da1.size
+            val progress = (offset * 100) / daBytes.size
             if (progress >= lastProgress + 10) {
                 onProgress("DA1: $progress% (offset=$offset, ack=0x5A)")
                 lastProgress = progress
@@ -237,7 +193,7 @@ object MtkBromConnection {
         }
         onProgress("כל הנתונים נשלחו בהצלחה! ממתין ל-ACK סופי...")
 
-        // 3. השהיה קצרה ושליחת ACK סופי (0x5A) וקריאת ACK סופי
+        // 3. השהיה קצרה ושליחת ACK סופי (0x5A) וקריאת ACK סופי (1 בייט)
         Thread.sleep(500)
         
         if (connection.bulkTransfer(oEp, byteArrayOf(0x5A.toByte()), 1, 2000) < 0) {
@@ -257,7 +213,7 @@ object MtkBromConnection {
         }
         connection.bulkTransfer(iEp, ByteArray(1), 1, 2000) // echo
         
-        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(parts.da1Addr.toInt()).array(), 4, 2000)
+        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(da1Addr.toInt()).array(), 4, 2000)
         connection.bulkTransfer(iEp, ByteArray(4), 4, 2000) // echo
         
         val syncBuf = ByteArray(1)
