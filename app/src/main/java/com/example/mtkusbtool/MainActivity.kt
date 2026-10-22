@@ -21,7 +21,7 @@ class MainActivity : AppCompatActivity() {
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     private var payloadBytes: ByteArray? = null
     
-    // רשימת קבצי ה-DA ישירות מתוך assets (ללא קידומת da/)
+    // רשימת קבצי ה-DA לניסוי
     private val daFiles = listOf(
         "DA_SWSEC.1b523f48.bin",
         "DA_SWSEC_CRYPTO20.5bed6638.bin",
@@ -98,8 +98,9 @@ class MainActivity : AppCompatActivity() {
         tvStatus.text = "טוען קבצים..."
         Thread {
             try {
-                addLog("טוען generic_patcher_payload.bin...")
-                assets.open("generic_patcher_payload.bin").use { payloadBytes = it.readBytes() }
+                // --- השינוי כאן ---
+                addLog("טוען da_x.bin...")
+                assets.open("da_x.bin").use { payloadBytes = it.readBytes() }
                 addLog("נטען Payload: ${payloadBytes?.size} בייט.")
                 
                 loadNextDaFile() // טוען את הקובץ הראשון
@@ -213,7 +214,6 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     addLog("== סיום DA1 (${daFiles[currentDaIndex]}): $result")
                     
-                    // השינוי כאן: אם התוצאה לא מכילה "הצלחה", ננסה את הקובץ הבא
                     if (!result.contains("הצלחה")) {
                         addLog(">>> הקובץ הנוכחי נכשל. מנסה את הקובץ הבא...")
                         currentDaIndex++
