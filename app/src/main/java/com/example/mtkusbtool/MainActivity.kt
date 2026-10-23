@@ -21,7 +21,7 @@ class MainActivity : AppCompatActivity() {
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     private var payloadBytes: ByteArray? = null
     
-    // רשימת קבצי ה-DA לניסוי
+    // רשימת קבצי ה-DA
     private val daFiles = listOf(
         "DA_SWSEC.1b523f48.bin",
         "DA_SWSEC_CRYPTO20.5bed6638.bin",
@@ -98,12 +98,12 @@ class MainActivity : AppCompatActivity() {
         tvStatus.text = "טוען קבצים..."
         Thread {
             try {
-                // --- השינוי כאן ---
-                addLog("טוען da_x.bin...")
-                assets.open("da_x.bin").use { payloadBytes = it.readBytes() }
+                addLog("טוען mt6761_payload.bin...")
+                // חזרנו ל-payload המקורי של Kamakiri
+                assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
                 addLog("נטען Payload: ${payloadBytes?.size} בייט.")
                 
-                loadNextDaFile() // טוען את הקובץ הראשון
+                loadNextDaFile() 
                 
                 runOnUiThread { tvStatus.text = "מוכן. חבר את המכשיר (כבוי)."; btnHandshake.isEnabled = true }
             } catch (e: Exception) {
