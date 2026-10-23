@@ -60,8 +60,19 @@ object MtkBromConnection {
             if (c.bulkTransfer(oEp, byteArrayOf(0xD4.toByte()), 1, 2000) < 0) return false
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(1).array(), 4, 2000) < 0) return false // 1 dword
+            
+            // קריאת סטטוס חובה
             val status = ByteArray(4)
-            c.bulkTransfer(iEp, status, 4, 2000) // קריאת סטטוס של write32
+            val statusRead = c.bulkTransfer(iEp, status, 4, 2000)
+            if (statusRead != 4) {
+                onProgress("  write32 status read failed (got $statusRead)")
+                return false
+            }
+            val statusInt = ByteBuffer.wrap(status).order(ByteOrder.BIG_ENDIAN).int
+            if (statusInt != 0) {
+                onProgress("  write32 status is 0x${String.format(Locale.US, "%08X", statusInt)} (expected 0)")
+                return false
+            }
             
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(val1).array(), 4, 2000) < 0) return false
             return true
@@ -73,30 +84,28 @@ object MtkBromConnection {
         onProgress("2. כתיבת כתובת Payload ל-Scratch (0x10007050)...")
         if (!write32(0x10007050, 0x100A00)) { c.close(); return "כתיבת Scratch נכשלה." }
 
-        onProgress("3. ניקוי buffer...")
-        c.bulkTransfer(iEp, ByteArray(4), 4, 500) // ניקוי שאריות של status
-
-        onProgress("4. שליחת 0xE0...")
+        onProgress("3. שליחת 0xE0...")
         c.bulkTransfer(oEp, byteArrayOf(0xE0.toByte()), 1, 2000)
         val echoCmd = ByteArray(1)
         c.bulkTransfer(iEp, echoCmd, 1, 2000)
 
-        onProgress("5. שליחת אורך (0xA00)...")
-        // שולחים 0xA00 למרות שה-payload קטן יותר, כמו בפרוטוקול המקורי
+        onProgress("4. שליחת אורך (0xA00)...")
         c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(0xA00).array(), 4, 2000)
         val echoSize = ByteArray(4)
         c.bulkTransfer(iEp, echoSize, 4, 2000)
 
-        onProgress("6. שליחת Payload (${payloadBytes.size} בייט)...")
+        onProgress("5. שליחת Payload (${payloadBytes.size} בייט)...")
         if (c.bulkTransfer(oEp, payloadBytes, payloadBytes.size, 5000) < 0) {
             c.close(); return "שליחת Payload נכשלה."
         }
 
-        onProgress("7. הפעלת ה-Trigger (controlTransfer)...")
+        onProgress("6. הפעלת ה-Trigger (controlTransfer)...")
         try {
-            // ה-trigger של Kamakiri: bmRequestType=0xA1, bRequest=0, wValue=0, wIndex=204
+            // ה-trigger של Kamakiri: wIndex=204 (0xCC)
             c.controlTransfer(0xA1, 0, 0, 204, null, 0, 5000)
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            onProgress("  Trigger exception: ${e.message}")
+        }
 
         c.close()
         onProgress("Kamakiri הורץ! ממתין ל-reconnect...")
