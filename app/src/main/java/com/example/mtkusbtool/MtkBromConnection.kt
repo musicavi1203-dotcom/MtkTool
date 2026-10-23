@@ -55,47 +55,49 @@ object MtkBromConnection {
         if (!doHandshake(c, iEp, oEp, onProgress)) { c.close(); return "Handshake נכשל." }
 
         onProgress("=== שלב ב': Kamakiri ===")
-        fun write32(addr: Int, values: IntArray): Boolean {
+        
+        fun write32(addr: Int, val1: Int): Boolean {
             if (c.bulkTransfer(oEp, byteArrayOf(0xD4.toByte()), 1, 2000) < 0) return false
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
-            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(values.size).array(), 4, 2000) < 0) return false
-            val ack = ByteArray(1); c.bulkTransfer(iEp, ack, 1, 2000)
-            for (v in values) {
-                if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(v).array(), 4, 2000) < 0) return false
-            }
+            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(1).array(), 4, 2000) < 0) return false // 1 dword
+            val status = ByteArray(4)
+            c.bulkTransfer(iEp, status, 4, 2000) // קריאת סטטוס של write32
+            
+            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(val1).array(), 4, 2000) < 0) return false
             return true
         }
-        fun read32(addr: Int, dwords: Int): Boolean {
-            if (c.bulkTransfer(oEp, byteArrayOf(0xD1.toByte()), 1, 2000) < 0) return false
-            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
-            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(dwords).array(), 4, 2000) < 0) return false
-            val ack = ByteArray(1); c.bulkTransfer(iEp, ack, 1, 2000)
-            val data = ByteArray(dwords * 4); c.bulkTransfer(iEp, data, data.size, 2000)
-            c.bulkTransfer(iEp, ByteArray(2), 2, 2000)
-            return true
-        }
-        fun echo(data: ByteArray) { c.bulkTransfer(oEp, data, data.size, 2000); c.bulkTransfer(iEp, ByteArray(data.size), data.size, 2000) }
 
-        onProgress("write32(0x10007050, revdword(0x100A00))...")
-        if (!write32(0x10007050, intArrayOf(0x000A1000))) { c.close(); return "write32 נכשל." }
-        
-        for (i in 0 until 0xF) {
-            read32(0x10007050 - (0xF - i) * 4, 0xF - i + 1)
+        onProgress("1. השבתת Watchdog (0x10007000)...")
+        if (!write32(0x10007000, 0x22000000)) { c.close(); return "השבתת Watchdog נכשלה." }
+
+        onProgress("2. כתיבת כתובת Payload ל-Scratch (0x10007050)...")
+        if (!write32(0x10007050, 0x100A00)) { c.close(); return "כתיבת Scratch נכשלה." }
+
+        onProgress("3. ניקוי buffer...")
+        c.bulkTransfer(iEp, ByteArray(4), 4, 500) // ניקוי שאריות של status
+
+        onProgress("4. שליחת 0xE0...")
+        c.bulkTransfer(oEp, byteArrayOf(0xE0.toByte()), 1, 2000)
+        val echoCmd = ByteArray(1)
+        c.bulkTransfer(iEp, echoCmd, 1, 2000)
+
+        onProgress("5. שליחת אורך (0xA00)...")
+        // שולחים 0xA00 למרות שה-payload קטן יותר, כמו בפרוטוקול המקורי
+        c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(0xA00).array(), 4, 2000)
+        val echoSize = ByteArray(4)
+        c.bulkTransfer(iEp, echoSize, 4, 2000)
+
+        onProgress("6. שליחת Payload (${payloadBytes.size} בייט)...")
+        if (c.bulkTransfer(oEp, payloadBytes, payloadBytes.size, 5000) < 0) {
+            c.close(); return "שליחת Payload נכשלה."
         }
-        
-        onProgress("echo 0xE0...")
-        echo(byteArrayOf(0xE0.toByte()))
-        onProgress("send payload length...")
-        echo(ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(payloadBytes.size).array())
-        c.bulkTransfer(iEp, ByteArray(2), 2, 2000)
-        onProgress("Sending payload (${payloadBytes.size} בייט)...")
-        c.bulkTransfer(oEp, payloadBytes, payloadBytes.size, 2000)
-        c.bulkTransfer(iEp, ByteArray(2), 2, 2000)
-        c.bulkTransfer(iEp, ByteArray(2), 2, 2000)
-        
-        onProgress("Triggering ctrl_transfer(0xA1, 0, 0, 0x25, 0)...")
-        try { c.controlTransfer(0xA1, 0, 0, 0x25, null, 0, 1000) } catch (e: Exception) {}
-        
+
+        onProgress("7. הפעלת ה-Trigger (controlTransfer)...")
+        try {
+            // ה-trigger של Kamakiri: bmRequestType=0xA1, bRequest=0, wValue=0, wIndex=204
+            c.controlTransfer(0xA1, 0, 0, 204, null, 0, 5000)
+        } catch (e: Exception) {}
+
         c.close()
         onProgress("Kamakiri הורץ! ממתין ל-reconnect...")
         return "KAMAKIRI_DONE"
@@ -136,7 +138,6 @@ object MtkBromConnection {
         val sigLen = 256
         onProgress("DA1: ${daBytes.size} בייט, addr=0x${java.lang.Long.toHexString(da1Addr)}, sigLen=$sigLen")
         
-        // 1. שליחת Header מלא (13 בייטים) - D7 + addr + size + packetsize (הכל ב-BE)
         val headerBuf = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
         headerBuf.put(0xD7.toByte())
         headerBuf.putInt(da1Addr.toInt())
@@ -147,7 +148,6 @@ object MtkBromConnection {
             connection.close(); return "שגיאה: שליחת Header נכשלה."
         }
         
-        // קריאת ACK (בייט אחד)
         val headerAck = ByteArray(1)
         if (connection.bulkTransfer(iEp, headerAck, 1, 2000) != 1) {
             connection.close(); return "שגיאה: לא התקבלה תגובה ל-Header."
@@ -163,7 +163,6 @@ object MtkBromConnection {
         
         onProgress("SEND_DA אושר! (0x5A) מתחיל להעביר נתונים...")
 
-        // 2. שליחת נתונים ב-4096 בייטים + קריאת ACK (0x5A)
         var offset = 0
         val chunkSize = 0x1000
         var lastProgress = -10
@@ -193,7 +192,6 @@ object MtkBromConnection {
         }
         onProgress("כל הנתונים נשלחו בהצלחה! ממתין ל-ACK סופי...")
 
-        // 3. השהיה קצרה ושליחת ACK סופי (0x5A) וקריאת ACK סופי (1 בייט)
         Thread.sleep(500)
         
         if (connection.bulkTransfer(oEp, byteArrayOf(0x5A.toByte()), 1, 2000) < 0) {
@@ -206,15 +204,13 @@ object MtkBromConnection {
         }
         onProgress("ACK סופי התקבל: 0x${String.format(Locale.US, "%02X", finalAckBuf[0])}")
 
-        // 4. שלב ה': קפיצה ל-DA1 (JUMP_DA - 0xD5)
         onProgress("=== שלב ה': קפיצה ל-DA1 ===")
         if (connection.bulkTransfer(oEp, byteArrayOf(0xD5.toByte()), 1, 2000) < 0) {
             connection.close(); return "שגיאה: שליחת JUMP_DA נכשלה."
         }
-        connection.bulkTransfer(iEp, ByteArray(1), 1, 2000) // echo
-        
+        connection.bulkTransfer(iEp, ByteArray(1), 1, 2000)
         connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(da1Addr.toInt()).array(), 4, 2000)
-        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000) // echo
+        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
         
         val syncBuf = ByteArray(1)
         connection.bulkTransfer(iEp, syncBuf, 1, 5000)
