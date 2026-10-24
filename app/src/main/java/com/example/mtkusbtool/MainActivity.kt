@@ -21,15 +21,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     private var payloadBytes: ByteArray? = null
-    private var authBytes: ByteArray? = null // הוספנו משתנה ל-AUTH
     
-    // תיקנתי את השם של DA_PL c95b62a2 ל-DA_PL.c95b62a2
+    // רשימה מעודכנת עם כל הקבצים מהתמונה שלך. שמתי את NO_CERT ראשון
     private val daFiles = listOf(
+        "DA_PL_NO_CERT_V6.bin",
+        "DA_SWSEC.bin",
         "DA_SWSEC.1b523f48.bin",
         "DA_SWSEC_CRYPTO20.5bed6638.bin",
         "DA_PL_CRYPTO20.997123da.bin",
         "DA_PL.c95b62a2.bin",
-        "MTK_AllInOne_DA.1d5fdec4.bin"
+        "MTK_AllInOne_DA.1d5fdec4.bin",
+        "MTK_AllInOne_DA.bin",
+        "DA_SWSEC_CRYPTO20.bin",
+        "MT6761.bin"
     )
     private var currentDaIndex = 0
     private var daBytes: ByteArray? = null
@@ -112,15 +116,6 @@ class MainActivity : AppCompatActivity() {
                 assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
                 addLog("נטען Payload: ${payloadBytes?.size} בייט.")
                 
-                // טעינת AUTH
-                try {
-                    assets.open("auth_sv5.auth").use { authBytes = it.readBytes() }
-                    addLog("נטען AUTH: ${authBytes?.size} בייט.")
-                } catch (e: Exception) {
-                    addLog("!! שגיאה בטעינת auth_sv5.auth: ${e.message}")
-                    authBytes = null
-                }
-
                 loadNextDaFile() 
                 
                 runOnUiThread { tvStatus.text = "מוכן. חבר את המכשיר (כבוי)."; btnHandshake.isEnabled = true }
@@ -230,8 +225,8 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                // מעבירים את authBytes לפונקציה
-                val result = MtkBromConnection.runDa1Phase(usbManager, device, dBytes, authBytes) { addLog(it) }
+                // הסרנו את שליחת ה-AUTH (מעבירים null) כדי לבדוק את הקבצים החדשים
+                val result = MtkBromConnection.runDa1Phase(usbManager, device, dBytes, null) { addLog(it) }
                 runOnUiThread {
                     addLog("== סיום DA1 (${daFiles[currentDaIndex]}): $result")
                     
