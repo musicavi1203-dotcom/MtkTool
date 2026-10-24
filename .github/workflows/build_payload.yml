@@ -1,0 +1,31 @@
+name: Build Brom Defuse Payload
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ARM Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi make
+
+      - name: Clone payloads repo
+        run: |
+          git clone https://github.com/shomykohai/mtk-payloads.git
+
+      - name: Build brom_defuse
+        run: |
+          cd mtk-payloads/brom_defuse
+          make
+
+      - name: Upload Payload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: brom_defuse_payload
+          path: mtk-payloads/brom_defuse/*.bin
