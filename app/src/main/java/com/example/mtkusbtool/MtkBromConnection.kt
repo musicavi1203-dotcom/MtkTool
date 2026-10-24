@@ -23,6 +23,7 @@ object MtkBromConnection {
     private const val CMD_WRITE32 = 0xD4
     private const val CMD_READ32 = 0xD1
     private const val CMD_SEND_CERT = 0xE0
+    private const val CMD_SEND_AUTH = 0xE2
 
     private fun readExact(c: UsbDeviceConnection, ep: UsbEndpoint, size: Int, timeout: Int): ByteArray? {
         val buf = ByteArray(size)
@@ -230,12 +231,45 @@ object MtkBromConnection {
         }
         if (!handshakeOk) { connection.close(); return "Handshake מחדש נכשל." }
 
+        // --- שלב ג.5: שליחת AUTH בפלחים ---
+        if (authBytes != null) {
+            onProgress("=== שלב ג.5: שליחת AUTH (${authBytes.size} בייט) ===")
+            if (!echoByte(connection, iEp, oEp, CMD_SEND_AUTH.toByte(), TIMEOUT, onProgress)) {
+                connection.close(); return "שליחת פקודת AUTH נכשלה."
+            }
+            if (!echo(connection, iEp, oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(authBytes.size).array(), TIMEOUT, onProgress)) {
+                connection.close(); return "שליחת אורך AUTH נכשלה."
+            }
+            if (!checkStatus(connection, iEp, TIMEOUT, onProgress)) {
+                connection.close(); return "status אחרי אורך AUTH לא תקין."
+            }
+            
+            // שליחת ה-AUTH בפלחים של 512 בייטים
+            var offset = 0
+            val chunkSize = 512
+            while (offset < authBytes.size) {
+                val len = minOf(chunkSize, authBytes.size - offset)
+                val chunk = authBytes.copyOfRange(offset, offset + len)
+                if (connection.bulkTransfer(oEp, chunk, len, TIMEOUT_LONG) < 0) {
+                    connection.close(); return "שליחת AUTH נכשלה ב-$offset."
+                }
+                offset += len
+                onProgress("  AUTH: $offset / ${authBytes.size}")
+            }
+            
+            val authAck = readExact(connection, iEp, 1, TIMEOUT)
+            if (authAck == null) {
+                onProgress("  AUTH ACK timeout (ממשיך בכל זאת)")
+            } else {
+                onProgress("  AUTH ACK = 0x${String.format(Locale.US, "%02X", authAck[0])}")
+            }
+        }
+
         onProgress("=== שלב ד': שליחת DA1 ===")
         
         val sigLen = 256
         onProgress("DA1: ${daBytes.size} בייט, addr=0x${java.lang.Long.toHexString(DA1_ADDR)}, sigLen=$sigLen")
         
-        // --- התיקון: echo לכל שדה! ---
         if (!echoByte(connection, iEp, oEp, CMD_SEND_DA.toByte(), TIMEOUT, onProgress)) {
             connection.close(); return "שגיאה: שליחת פקודת SEND_DA נכשלה."
         }
