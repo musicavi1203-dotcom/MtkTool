@@ -197,7 +197,8 @@ object MtkBromConnection {
 
         onProgress("8. הפעלת ה-Trigger...")
         try {
-            c.controlTransfer(0xA1, 0, 0, 0x7F, null, 0, TIMEOUT)
+            // --- השינוי כאן: שימוש ב-0xCC עבור Kamakiri2 (brom_defuse) ---
+            c.controlTransfer(0xA1, 0, 0, 0xCC, null, 0, TIMEOUT)
         } catch (e: Exception) {}
 
         c.close()
