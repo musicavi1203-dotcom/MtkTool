@@ -245,7 +245,7 @@ object MtkBromConnection {
             connection.close(); return "שגיאה: שליחת Header נכשלה."
         }
         
-        // --- התיקון: קריאת Echo של ה-Header, ואז קריאת התשובה האמיתית ---
+        // --- תיקון: קריאת Echo של ה-Header (0xD7), ואז קריאת התשובה האמיתית ---
         val echoHeader = readExact(connection, iEp, 1, TIMEOUT)
         if (echoHeader == null) {
             connection.close(); return "שגיאה: לא התקבל echo ל-Header."
@@ -254,7 +254,7 @@ object MtkBromConnection {
 
         val headerAck = readExact(connection, iEp, 1, TIMEOUT)
         if (headerAck == null) {
-            connection.close(); return "שגיאה: לא התקבלה תגובה ל-Header."
+            connection.close(); return "שגיאה: לא התקבלה תשובה אמיתית ל-Header."
         }
         
         val ackHex = String.format(Locale.US, "0x%02X", headerAck[0])
