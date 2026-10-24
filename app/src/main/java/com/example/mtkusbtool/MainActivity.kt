@@ -22,7 +22,6 @@ class MainActivity : AppCompatActivity() {
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     private var payloadBytes: ByteArray? = null
     
-    // רשימה מעודכנת עם כל הקבצים מהתמונה שלך. שמתי את NO_CERT ראשון
     private val daFiles = listOf(
         "DA_PL_NO_CERT_V6.bin",
         "DA_SWSEC.bin",
@@ -112,8 +111,8 @@ class MainActivity : AppCompatActivity() {
         tvStatus.text = "טוען קבצים..."
         Thread {
             try {
-                addLog("טוען mt6761_payload.bin...")
-                assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
+                addLog("טוען brom_defuse.bin...")
+                assets.open("brom_defuse.bin").use { payloadBytes = it.readBytes() }
                 addLog("נטען Payload: ${payloadBytes?.size} בייט.")
                 
                 loadNextDaFile() 
@@ -225,7 +224,6 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                // הסרנו את שליחת ה-AUTH (מעבירים null) כדי לבדוק את הקבצים החדשים
                 val result = MtkBromConnection.runDa1Phase(usbManager, device, dBytes, null) { addLog(it) }
                 runOnUiThread {
                     addLog("== סיום DA1 (${daFiles[currentDaIndex]}): $result")
