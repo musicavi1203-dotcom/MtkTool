@@ -198,6 +198,7 @@ object MtkBromConnection {
         return "KAMAKIRI_DONE"
     }
 
+    // פרמטר authBytes נשאר כדי לא לשבור את החתימה, אבל אנחנו מעבירים null
     fun runDa1Phase(usbManager: UsbManager, device: UsbDevice, daBytes: ByteArray, authBytes: ByteArray?, onProgress: (String) -> Unit): String {
         var c: UsbDeviceConnection? = null
         for (attempt in 1..30) {
@@ -227,34 +228,12 @@ object MtkBromConnection {
         onProgress("=== שלב ג': Handshake חדש ===")
         if (!doHandshake(connection, iEp, oEp, onProgress)) { connection.close(); return "Handshake מחדש נכשל." }
 
-        // --- שלב ג.5: שליחת AUTH עם פקודה 0xE2 ---
-        if (authBytes != null) {
-            onProgress("=== שלב ג.5: שליחת AUTH (פקודה 0xE2) ===")
-            if (!echoByte(connection, iEp, oEp, 0xE2.toByte(), TIMEOUT, onProgress)) {
-                connection.close(); return "שליחת פקודת AUTH נכשלה."
-            }
-            if (!echo(connection, iEp, oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(authBytes.size).array(), TIMEOUT, onProgress)) {
-                connection.close(); return "שליחת אורך AUTH נכשלה."
-            }
-            if (connection.bulkTransfer(oEp, authBytes, authBytes.size, TIMEOUT) < 0) {
-                connection.close(); return "שליחת נתוני AUTH נכשלה."
-            }
-            val authStatus = readExact(connection, iEp, 2, TIMEOUT)
-            if (authStatus != null) {
-                val st = ByteBuffer.wrap(authStatus).order(ByteOrder.BIG_ENDIAN).short.toInt() and 0xFFFF
-                onProgress("  AUTH status = 0x${String.format(Locale.US, "%04X", st)}")
-            } else {
-                onProgress("  AUTH status timeout (ממשיך בכל זאת)")
-            }
-        }
-
         onProgress("=== שלב ד': שליחת DA1 ===")
         
         val da1Addr = 0x200000L
         val sigLen = 256
         onProgress("DA1: ${daBytes.size} בייט, addr=0x${java.lang.Long.toHexString(da1Addr)}, sigLen=$sigLen")
         
-        // --- שליחת ה-Header בשלבים נפרדים ---
         if (!echoByte(connection, iEp, oEp, 0xD7.toByte(), TIMEOUT, onProgress)) {
             connection.close(); return "שגיאה: שליחת פקודת SEND_DA נכשלה."
         }
@@ -328,7 +307,7 @@ object MtkBromConnection {
         
         val sync = readExact(connection, iEp, 1, 5000)
         if (sync == null || sync[0] != 0xC0.toByte()) {
-            val valStr = if (sync != null) String.format(Locale.US, "0x%02X", sync[0]) else "timeout"
+            val valStr = if (sync != null) String.format(Locale.US, "%02X", sync[0]) else "timeout"
             connection.close(); return "sync=$valStr"
         }
         onProgress("DA1 רץ! (0xC0 התקבל)")
