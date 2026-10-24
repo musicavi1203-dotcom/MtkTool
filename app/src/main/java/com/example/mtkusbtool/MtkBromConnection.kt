@@ -198,7 +198,6 @@ object MtkBromConnection {
         return "KAMAKIRI_DONE"
     }
 
-    // --- עדכון: הוספנו פרמטר authBytes ---
     fun runDa1Phase(usbManager: UsbManager, device: UsbDevice, daBytes: ByteArray, authBytes: ByteArray?, onProgress: (String) -> Unit): String {
         var c: UsbDeviceConnection? = null
         for (attempt in 1..30) {
@@ -228,10 +227,10 @@ object MtkBromConnection {
         onProgress("=== שלב ג': Handshake חדש ===")
         if (!doHandshake(connection, iEp, oEp, onProgress)) { connection.close(); return "Handshake מחדש נכשל." }
 
-        // --- שלב חדש: שליחת AUTH לפני DA ---
+        // --- שלב ג.5: שליחת AUTH עם פקודה 0xE2 ---
         if (authBytes != null) {
-            onProgress("=== שלב ג.5: שליחת AUTH ===")
-            if (!echoByte(connection, iEp, oEp, 0xE0.toByte(), TIMEOUT, onProgress)) {
+            onProgress("=== שלב ג.5: שליחת AUTH (פקודה 0xE2) ===")
+            if (!echoByte(connection, iEp, oEp, 0xE2.toByte(), TIMEOUT, onProgress)) {
                 connection.close(); return "שליחת פקודת AUTH נכשלה."
             }
             if (!echo(connection, iEp, oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(authBytes.size).array(), TIMEOUT, onProgress)) {
@@ -255,7 +254,7 @@ object MtkBromConnection {
         val sigLen = 256
         onProgress("DA1: ${daBytes.size} בייט, addr=0x${java.lang.Long.toHexString(da1Addr)}, sigLen=$sigLen")
         
-        // --- תיקון: שליחת ה-Header בשלבים נפרדים כמו ב-mtkclient ---
+        // --- שליחת ה-Header בשלבים נפרדים ---
         if (!echoByte(connection, iEp, oEp, 0xD7.toByte(), TIMEOUT, onProgress)) {
             connection.close(); return "שגיאה: שליחת פקודת SEND_DA נכשלה."
         }
