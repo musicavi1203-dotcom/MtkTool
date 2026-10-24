@@ -111,11 +111,18 @@ object MtkBromConnection {
     private fun doHandshake(c: UsbDeviceConnection, inEp: UsbEndpoint, outEp: UsbEndpoint, onProgress: (String) -> Unit): Boolean {
         val sequence = byteArrayOf(0xA0.toByte(), 0x0A.toByte(), 0x50.toByte(), 0x05.toByte())
         for (i in sequence.indices) {
-            if (c.bulkTransfer(outEp, byteArrayOf(sequence[i]), 1, TIMEOUT) < 0) return false
-            val reply = readExact(c, inEp, 1, TIMEOUT) ?: return false
+            if (c.bulkTransfer(outEp, byteArrayOf(sequence[i]), 1, TIMEOUT) < 0) {
+                onProgress("Handshake send failed at step $i")
+                return false
+            }
+            val reply = readExact(c, inEp, 1, TIMEOUT)
+            if (reply == null) {
+                onProgress("Handshake timeout at step $i")
+                return false
+            }
             val expected = (sequence[i].toInt().inv() and 0xFF).toByte()
             if (reply[0] != expected) {
-                onProgress("Handshake failed at step $i (expected 0x${String.format(Locale.US, "%02X", expected)}, got 0x${String.format(Locale.US, "%02X", reply[0])})")
+                onProgress("Handshake mismatch at step $i (expected 0x${String.format(Locale.US, "%02X", expected)}, got 0x${String.format(Locale.US, "%02X", reply[0])})")
                 return false
             }
         }
@@ -198,7 +205,6 @@ object MtkBromConnection {
         return "KAMAKIRI_DONE"
     }
 
-    // פרמטר authBytes נשאר כדי לא לשבור את החתימה, אבל אנחנו מעבירים null
     fun runDa1Phase(usbManager: UsbManager, device: UsbDevice, daBytes: ByteArray, authBytes: ByteArray?, onProgress: (String) -> Unit): String {
         var c: UsbDeviceConnection? = null
         for (attempt in 1..30) {
@@ -226,7 +232,17 @@ object MtkBromConnection {
         val iEp = inEp; val oEp = outEp
 
         onProgress("=== שלב ג': Handshake חדש ===")
-        if (!doHandshake(connection, iEp, oEp, onProgress)) { connection.close(); return "Handshake מחדש נכשל." }
+        // --- התיקון: לופ ניסיונות חוזרים ל-Handshake ---
+        var handshakeOk = false
+        for (i in 1..5) {
+            if (doHandshake(connection, iEp, oEp, onProgress)) {
+                handshakeOk = true
+                break
+            }
+            onProgress("  Handshake failed, retrying ($i/5)...")
+            Thread.sleep(500)
+        }
+        if (!handshakeOk) { connection.close(); return "Handshake מחדש נכשל." }
 
         onProgress("=== שלב ד': שליחת DA1 ===")
         
@@ -307,7 +323,7 @@ object MtkBromConnection {
         
         val sync = readExact(connection, iEp, 1, 5000)
         if (sync == null || sync[0] != 0xC0.toByte()) {
-            val valStr = if (sync != null) String.format(Locale.US, "%02X", sync[0]) else "timeout"
+            val valStr = if (sync != null) String.format(Locale.US, "0x%02X", sync[0]) else "timeout"
             connection.close(); return "sync=$valStr"
         }
         onProgress("DA1 רץ! (0xC0 התקבל)")
