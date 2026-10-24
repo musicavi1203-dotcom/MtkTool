@@ -24,8 +24,13 @@ jobs:
           cd mtk-payloads/brom_defuse
           make
 
+      - name: List all files to see where the .bin is
+        run: |
+          echo "=== Looking for .bin files ==="
+          find mtk-payloads -name "*.bin" -type f
+
       - name: Upload Payload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: brom_defuse_payload
-          path: mtk-payloads/brom_defuse/*.bin
+          path: mtk-payloads/**/*.bin
