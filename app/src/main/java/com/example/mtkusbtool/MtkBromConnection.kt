@@ -59,30 +59,29 @@ object MtkBromConnection {
         fun write32(addr: Int, val1: Int): Boolean {
             // 1. שלח פקודה
             if (c.bulkTransfer(oEp, byteArrayOf(0xD4.toByte()), 1, 2000) < 0) return false
-            // 2. קרא 1 בייט echo
+            
+            // 2. קרא 1 בייט echo (ומודפס!)
             val echo = ByteArray(1)
             if (c.bulkTransfer(iEp, echo, 1, 2000) != 1) {
                 onProgress("  write32 echo failed")
                 return false
             }
+            onProgress("  write32 echo = 0x${String.format(Locale.US, "%02X", echo[0])}")
+            
             // 3. שלח addr
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
+            
             // 4. שלח אורך (1 dword)
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(1).array(), 4, 2000) < 0) return false
             
-            // 5. קרא סטטוס (גמיש - 1 או 4 בייטים)
-            val status = ByteArray(4)
-            val statusRead = c.bulkTransfer(iEp, status, 4, 500) // טיימאאוט קצר
-            if (statusRead == 1) {
-                onProgress("  write32 status (1 byte) = 0x${String.format(Locale.US, "%02X", status[0])}")
-                // ממשיכים גם אם זה 0x01 (אולי ה-BROM סתם מגיב מוזר)
-            } else if (statusRead == 4) {
-                val statusInt = ByteBuffer.wrap(status).order(ByteOrder.BIG_ENDIAN).int
-                onProgress("  write32 status (4 bytes) = 0x${String.format(Locale.US, "%08X", statusInt)}")
-            } else {
+            // 5. קרא סטטוס (1 בייט)
+            val status = ByteArray(1)
+            val statusRead = c.bulkTransfer(iEp, status, 1, 2000)
+            if (statusRead != 1) {
                 onProgress("  write32 status read failed (got $statusRead)")
                 return false
             }
+            onProgress("  write32 status = 0x${String.format(Locale.US, "%02X", status[0])}")
             
             // 6. שלח את הנתון
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(val1).array(), 4, 2000) < 0) return false
@@ -90,7 +89,8 @@ object MtkBromConnection {
         }
 
         onProgress("1. השבתת Watchdog (0x10007000)...")
-        if (!write32(0x10007000, 0x22000000)) { c.close(); return "השבתת Watchdog נכשלה." }
+        // משתמשים בערך 0x22000064, הערך הסטנדרטי ל-MT6761
+        if (!write32(0x10007000, 0x22000064)) { c.close(); return "השבתת Watchdog נכשלה." }
 
         onProgress("2. כתיבת כתובת Payload ל-Scratch (0x10007050)...")
         if (!write32(0x10007050, 0x100A00)) { c.close(); return "כתיבת Scratch נכשלה." }
@@ -110,13 +110,11 @@ object MtkBromConnection {
             c.close(); return "שליחת Payload נכשלה."
         }
         
-        // קריאת 2 בייטים של סטטוס אחרי ה-payload
         val payloadStatus = ByteArray(2)
         c.bulkTransfer(iEp, payloadStatus, 2, 2000)
 
         onProgress("6. הפעלת ה-Trigger (controlTransfer)...")
         try {
-            // ה-trigger של Kamakiri: wIndex=204 (0xCC)
             c.controlTransfer(0xA1, 0, 0, 204, null, 0, 5000)
         } catch (e: Exception) {
             onProgress("  Trigger exception: ${e.message}")
