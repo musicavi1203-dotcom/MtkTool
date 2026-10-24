@@ -21,7 +21,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnHandshake: Button
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     private var payloadBytes: ByteArray? = null
-    
+    private var authBytes: ByteArray? = null  // משתנה ל-AUTH
+
     private val daFiles = listOf(
         "DA_PL_NO_CERT_V6.bin",
         "DA_SWSEC.bin",
@@ -111,11 +112,22 @@ class MainActivity : AppCompatActivity() {
         tvStatus.text = "טוען קבצים..."
         Thread {
             try {
+                // טעינת ה-payload (brom_defuse)
                 addLog("טוען brom_defuse.bin...")
                 assets.open("brom_defuse.bin").use { payloadBytes = it.readBytes() }
                 addLog("נטען Payload: ${payloadBytes?.size} בייט.")
-                
-                loadNextDaFile() 
+
+                // טעינת קובץ ה-AUTH (auth_sv5.auth)
+                addLog("טוען auth_sv5.auth...")
+                try {
+                    assets.open("auth_sv5.auth").use { authBytes = it.readBytes() }
+                    addLog("נטען AUTH: ${authBytes?.size} בייט.")
+                } catch (e: Exception) {
+                    addLog("!! שגיאה בטעינת auth_sv5.auth: ${e.message}")
+                    authBytes = null
+                }
+
+                loadNextDaFile()
                 
                 runOnUiThread { tvStatus.text = "מוכן. חבר את המכשיר (כבוי)."; btnHandshake.isEnabled = true }
             } catch (e: Exception) {
@@ -224,7 +236,8 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             try {
-                val result = MtkBromConnection.runDa1Phase(usbManager, device, dBytes, null) { addLog(it) }
+                // --- התיקון: מעבירים את authBytes במקום null ---
+                val result = MtkBromConnection.runDa1Phase(usbManager, device, dBytes, authBytes) { addLog(it) }
                 runOnUiThread {
                     addLog("== סיום DA1 (${daFiles[currentDaIndex]}): $result")
                     
