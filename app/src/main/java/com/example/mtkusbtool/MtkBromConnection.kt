@@ -232,7 +232,6 @@ object MtkBromConnection {
         val iEp = inEp; val oEp = outEp
 
         onProgress("=== שלב ג': Handshake חדש ===")
-        // --- התיקון: לופ ניסיונות חוזרים ל-Handshake ---
         var handshakeOk = false
         for (i in 1..5) {
             if (doHandshake(connection, iEp, oEp, onProgress)) {
