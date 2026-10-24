@@ -53,7 +53,6 @@ object MtkBromConnection {
             onProgress("  status read timeout")
             return false
         }
-        // --- התיקון כאן: BIG_ENDIAN במקום LITTLE_ENDIAN ---
         val value = ByteBuffer.wrap(status).order(ByteOrder.BIG_ENDIAN).short.toInt() and 0xFFFF
         onProgress("  status = 0x${String.format(Locale.US, "%04X", value)}")
         if (value != 0 && value != 1) {
@@ -81,7 +80,6 @@ object MtkBromConnection {
         
         val finalStatus = readExact(c, inEp, 2, 500)
         if (finalStatus != null) {
-            // --- התיקון כאן: BIG_ENDIAN ---
             val valInt = ByteBuffer.wrap(finalStatus).order(ByteOrder.BIG_ENDIAN).short.toInt() and 0xFFFF
             onProgress("  final status = 0x${String.format(Locale.US, "%04X", valInt)}")
         } else {
@@ -106,7 +104,6 @@ object MtkBromConnection {
         
         val finalStatus = readExact(c, inEp, 2, 500)
         if (finalStatus != null) {
-            // --- התיקון כאן: BIG_ENDIAN ---
             val valInt = ByteBuffer.wrap(finalStatus).order(ByteOrder.BIG_ENDIAN).short.toInt() and 0xFFFF
             onProgress("  read32 final status = 0x${String.format(Locale.US, "%04X", valInt)}")
         }
@@ -248,6 +245,13 @@ object MtkBromConnection {
             connection.close(); return "שגיאה: שליחת Header נכשלה."
         }
         
+        // --- התיקון: קריאת Echo של ה-Header, ואז קריאת התשובה האמיתית ---
+        val echoHeader = readExact(connection, iEp, 1, TIMEOUT)
+        if (echoHeader == null) {
+            connection.close(); return "שגיאה: לא התקבל echo ל-Header."
+        }
+        onProgress("  Header echo = 0x${String.format(Locale.US, "%02X", echoHeader[0])}")
+
         val headerAck = readExact(connection, iEp, 1, TIMEOUT)
         if (headerAck == null) {
             connection.close(); return "שגיאה: לא התקבלה תגובה ל-Header."
