@@ -244,7 +244,6 @@ object MtkBromConnection {
                 connection.close(); return "status אחרי אורך AUTH לא תקין."
             }
             
-            // שליחת ה-AUTH בפלחים של 512 בייטים
             var offset = 0
             val chunkSize = 512
             while (offset < authBytes.size) {
@@ -257,12 +256,22 @@ object MtkBromConnection {
                 onProgress("  AUTH: $offset / ${authBytes.size}")
             }
             
-            val authAck = readExact(connection, iEp, 1, TIMEOUT)
-            if (authAck == null) {
-                onProgress("  AUTH ACK timeout (ממשיך בכל זאת)")
-            } else {
-                onProgress("  AUTH ACK = 0x${String.format(Locale.US, "%02X", authAck[0])}")
+            // --- התיקון: קריאת עד 4 בייטים של ACK כדי לנקות את ה-buffer ---
+            val ackBytes = mutableListOf<Byte>()
+            for (i in 0 until 4) {
+                val b = readExact(connection, iEp, 1, 300)
+                if (b == null) break
+                ackBytes.add(b[0])
             }
+            if (ackBytes.isEmpty()) {
+                onProgress("  AUTH ACK timeout")
+            } else {
+                val hex = ackBytes.joinToString(" ") { String.format(Locale.US, "%02X", it) }
+                onProgress("  AUTH ACK = [$hex] (${ackBytes.size} בייטים)")
+            }
+            
+            // ניקוי סופי של ה-buffer
+            readExact(connection, iEp, 4, 100)
         }
 
         onProgress("=== שלב ד': שליחת DA1 ===")
