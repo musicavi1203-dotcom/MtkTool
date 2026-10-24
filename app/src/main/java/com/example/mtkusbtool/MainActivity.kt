@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import java.io.File
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
@@ -21,7 +22,6 @@ class MainActivity : AppCompatActivity() {
     private val ACTION_USB_PERMISSION = "com.example.mtkusbtool.USB_PERMISSION"
     private var payloadBytes: ByteArray? = null
     
-    // רשימת קבצי ה-DA
     private val daFiles = listOf(
         "DA_SWSEC.1b523f48.bin",
         "DA_SWSEC_CRYPTO20.5bed6638.bin",
@@ -34,15 +34,25 @@ class MainActivity : AppCompatActivity() {
 
     private var isRunning = false
     private var waitingForReconnect = false
-    private var currentPhase = "kamakiri" // "kamakiri" או "da1"
+    private var currentPhase = "kamakiri"
+
+    // --- תוספת שמירת הלוג ---
+    private val logFile: File by lazy { File(filesDir, "mtk_tool.log") }
 
     private fun addLog(message: String) {
+        // שמירה לקובץ כדי שלא יימחק ברקע
+        try {
+            logFile.appendText("$message\n")
+        } catch (e: Exception) {}
+
+        // עדכון המסך
         runOnUiThread {
             tvLog.append("$message\n")
             val sv = tvLog.parent as android.view.View
             sv.post { sv.scrollTo(0, sv.bottom) }
         }
     }
+    // -------------------------
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -95,11 +105,13 @@ class MainActivity : AppCompatActivity() {
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
 
+        // מחיקת הלוג הישן בכל פתיחה של האפליקציה
+        if (logFile.exists()) logFile.delete()
+
         tvStatus.text = "טוען קבצים..."
         Thread {
             try {
                 addLog("טוען mt6761_payload.bin...")
-                // חזרנו ל-payload המקורי של Kamakiri
                 assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
                 addLog("נטען Payload: ${payloadBytes?.size} בייט.")
                 
