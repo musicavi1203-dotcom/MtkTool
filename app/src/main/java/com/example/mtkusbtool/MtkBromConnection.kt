@@ -82,8 +82,6 @@ object MtkBromConnection {
         if (finalStatus != null) {
             val valInt = ByteBuffer.wrap(finalStatus).order(ByteOrder.BIG_ENDIAN).short.toInt() and 0xFFFF
             onProgress("  final status = 0x${String.format(Locale.US, "%04X", valInt)}")
-        } else {
-            onProgress("  final status timeout (ignored)")
         }
         return true
     }
@@ -200,7 +198,8 @@ object MtkBromConnection {
         return "KAMAKIRI_DONE"
     }
 
-    fun runDa1Phase(usbManager: UsbManager, device: UsbDevice, daBytes: ByteArray, onProgress: (String) -> Unit): String {
+    // --- עדכון: הוספנו פרמטר authBytes ---
+    fun runDa1Phase(usbManager: UsbManager, device: UsbDevice, daBytes: ByteArray, authBytes: ByteArray?, onProgress: (String) -> Unit): String {
         var c: UsbDeviceConnection? = null
         for (attempt in 1..30) {
             c = usbManager.openDevice(device)
@@ -229,32 +228,45 @@ object MtkBromConnection {
         onProgress("=== שלב ג': Handshake חדש ===")
         if (!doHandshake(connection, iEp, oEp, onProgress)) { connection.close(); return "Handshake מחדש נכשל." }
 
+        // --- שלב חדש: שליחת AUTH לפני DA ---
+        if (authBytes != null) {
+            onProgress("=== שלב ג.5: שליחת AUTH ===")
+            if (!echoByte(connection, iEp, oEp, 0xE0.toByte(), TIMEOUT, onProgress)) {
+                connection.close(); return "שליחת פקודת AUTH נכשלה."
+            }
+            if (!echo(connection, iEp, oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(authBytes.size).array(), TIMEOUT, onProgress)) {
+                connection.close(); return "שליחת אורך AUTH נכשלה."
+            }
+            if (connection.bulkTransfer(oEp, authBytes, authBytes.size, TIMEOUT) < 0) {
+                connection.close(); return "שליחת נתוני AUTH נכשלה."
+            }
+            val authStatus = readExact(connection, iEp, 2, TIMEOUT)
+            if (authStatus != null) {
+                val st = ByteBuffer.wrap(authStatus).order(ByteOrder.BIG_ENDIAN).short.toInt() and 0xFFFF
+                onProgress("  AUTH status = 0x${String.format(Locale.US, "%04X", st)}")
+            } else {
+                onProgress("  AUTH status timeout (ממשיך בכל זאת)")
+            }
+        }
+
         onProgress("=== שלב ד': שליחת DA1 ===")
         
         val da1Addr = 0x200000L
         val sigLen = 256
         onProgress("DA1: ${daBytes.size} בייט, addr=0x${java.lang.Long.toHexString(da1Addr)}, sigLen=$sigLen")
         
-        val headerBuf = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
-        headerBuf.put(0xD7.toByte())
-        headerBuf.putInt(da1Addr.toInt())
-        headerBuf.putInt(daBytes.size)
-        headerBuf.putInt(0x1000)
-        
-        if (connection.bulkTransfer(oEp, headerBuf.array(), 13, TIMEOUT) < 0) {
-            connection.close(); return "שגיאה: שליחת Header נכשלה."
+        // --- תיקון: שליחת ה-Header בשלבים נפרדים כמו ב-mtkclient ---
+        if (!echoByte(connection, iEp, oEp, 0xD7.toByte(), TIMEOUT, onProgress)) {
+            connection.close(); return "שגיאה: שליחת פקודת SEND_DA נכשלה."
         }
         
-        // --- תיקון: קריאת Echo של ה-Header, ואז קריאת התשובה האמיתית ---
-        val echoHeader = readExact(connection, iEp, 1, TIMEOUT)
-        if (echoHeader == null) {
-            connection.close(); return "שגיאה: לא התקבל echo ל-Header."
-        }
-        onProgress("  Header echo = 0x${String.format(Locale.US, "%02X", echoHeader[0])}")
-
+        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(da1Addr.toInt()).array(), 4, TIMEOUT)
+        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(daBytes.size).array(), 4, TIMEOUT)
+        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(0x1000).array(), 4, TIMEOUT)
+        
         val headerAck = readExact(connection, iEp, 1, TIMEOUT)
         if (headerAck == null) {
-            connection.close(); return "שגיאה: לא התקבלה תשובה אמיתית ל-Header."
+            connection.close(); return "שגיאה: לא התקבלה תשובה ל-Header."
         }
         
         val ackHex = String.format(Locale.US, "0x%02X", headerAck[0])
