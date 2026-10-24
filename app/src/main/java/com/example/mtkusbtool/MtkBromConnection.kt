@@ -57,11 +57,20 @@ object MtkBromConnection {
         onProgress("=== שלב ב': Kamakiri ===")
         
         fun write32(addr: Int, val1: Int): Boolean {
+            // 1. Send command 0xD4
             if (c.bulkTransfer(oEp, byteArrayOf(0xD4.toByte()), 1, 2000) < 0) return false
+            // 2. Read 1-byte echo!
+            val echo = ByteArray(1)
+            if (c.bulkTransfer(iEp, echo, 1, 2000) != 1) {
+                onProgress("  write32 echo failed")
+                return false
+            }
+            // 3. Send addr
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
-            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(1).array(), 4, 2000) < 0) return false // 1 dword
+            // 4. Send length (1 dword)
+            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(1).array(), 4, 2000) < 0) return false
             
-            // קריאת סטטוס חובה
+            // 5. Read 4-byte status
             val status = ByteArray(4)
             val statusRead = c.bulkTransfer(iEp, status, 4, 2000)
             if (statusRead != 4) {
@@ -74,6 +83,7 @@ object MtkBromConnection {
                 return false
             }
             
+            // 6. Send data
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(val1).array(), 4, 2000) < 0) return false
             return true
         }
@@ -98,6 +108,10 @@ object MtkBromConnection {
         if (c.bulkTransfer(oEp, payloadBytes, payloadBytes.size, 5000) < 0) {
             c.close(); return "שליחת Payload נכשלה."
         }
+        
+        // קריאת 2 בייטים של סטטוס אחרי ה-payload
+        val payloadStatus = ByteArray(2)
+        c.bulkTransfer(iEp, payloadStatus, 2, 2000)
 
         onProgress("6. הפעלת ה-Trigger (controlTransfer)...")
         try {
