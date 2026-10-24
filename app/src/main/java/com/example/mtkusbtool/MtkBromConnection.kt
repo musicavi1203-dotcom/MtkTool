@@ -13,35 +13,18 @@ object MtkBromConnection {
 
     private fun doHandshake(c: UsbDeviceConnection, inEp: UsbEndpoint, outEp: UsbEndpoint, onProgress: (String) -> Unit): Boolean {
         val resp = ByteArray(1)
-        
         onProgress("Handshake שלב 1: A0...")
         c.bulkTransfer(outEp, byteArrayOf(0xA0.toByte()), 1, 1000)
-        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0x5F.toByte()) {
-            onProgress("נכשל ב-A0")
-            return false
-        }
-        
+        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0x5F.toByte()) { onProgress("נכשל ב-A0"); return false }
         onProgress("Handshake שלב 2: 0A...")
         c.bulkTransfer(outEp, byteArrayOf(0x0A.toByte()), 1, 1000)
-        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0xF5.toByte()) {
-            onProgress("נכשל ב-0A")
-            return false
-        }
-        
+        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0xF5.toByte()) { onProgress("נכשל ב-0A"); return false }
         onProgress("Handshake שלב 3: 50...")
         c.bulkTransfer(outEp, byteArrayOf(0x50.toByte()), 1, 1000)
-        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0xAF.toByte()) {
-            onProgress("נכשל ב-50")
-            return false
-        }
-        
+        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0xAF.toByte()) { onProgress("נכשל ב-50"); return false }
         onProgress("Handshake שלב 4: 05...")
         c.bulkTransfer(outEp, byteArrayOf(0x05.toByte()), 1, 1000)
-        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0xFA.toByte()) {
-            onProgress("נכשל ב-05")
-            return false
-        }
-        
+        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0xFA.toByte()) { onProgress("נכשל ב-05"); return false }
         onProgress("BROM handshake מלא OK!")
         return true
     }
@@ -74,26 +57,25 @@ object MtkBromConnection {
             if (c.bulkTransfer(oEp, byteArrayOf(0xD4.toByte()), 1, 2000) < 0) return false
             
             val echo = ByteArray(1)
-            val echoRead = c.bulkTransfer(iEp, echo, 1, 2000)
-            if (echoRead == 1) {
+            if (c.bulkTransfer(iEp, echo, 1, 2000) == 1) {
                 onProgress("  write32 echo = 0x${String.format(Locale.US, "%02X", echo[0])}")
-            } else {
-                onProgress("  write32 echo timeout")
             }
             
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(1).array(), 4, 2000) < 0) return false
             
-            val status = ByteArray(2)
-            val statusRead = c.bulkTransfer(iEp, status, 2, 2000)
-            if (statusRead != 2) {
+            // --- תיקון: קריאת 4 בייטים של סטטוס (לא 2) ---
+            val status = ByteArray(4)
+            val statusRead = c.bulkTransfer(iEp, status, 4, 2000)
+            if (statusRead != 4) {
                 onProgress("  write32 status read failed (got $statusRead)")
                 return false
             }
-            val statusInt = ByteBuffer.wrap(status).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
-            onProgress("  write32 status = 0x${String.format(Locale.US, "%04X", statusInt)}")
+            // ה-BROM שולח BE, לא LE
+            val statusInt = ByteBuffer.wrap(status).order(ByteOrder.BIG_ENDIAN).int
+            onProgress("  write32 status = 0x${String.format(Locale.US, "%08X", statusInt)}")
             if (statusInt != 0) {
-                onProgress("  write32 failed with status 0x${String.format(Locale.US, "%04X", statusInt)}")
+                onProgress("  write32 failed with status 0x${String.format(Locale.US, "%08X", statusInt)}")
                 return false
             }
             
@@ -103,10 +85,14 @@ object MtkBromConnection {
 
         fun read32(addr: Int, dwords: Int): Boolean {
             if (c.bulkTransfer(oEp, byteArrayOf(0xD1.toByte()), 1, 2000) < 0) return false
+            val echo = ByteArray(1)
+            c.bulkTransfer(iEp, echo, 1, 2000) // קריאת echo
+            
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(dwords).array(), 4, 2000) < 0) return false
-            val status = ByteArray(2)
-            c.bulkTransfer(iEp, status, 2, 2000)
+            
+            val status = ByteArray(4)
+            c.bulkTransfer(iEp, status, 4, 2000)
             val data = ByteArray(dwords * 4)
             c.bulkTransfer(iEp, data, data.size, 2000)
             return true
@@ -137,11 +123,11 @@ object MtkBromConnection {
         c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(0xA00).array(), 4, 2000)
         c.bulkTransfer(iEp, ByteArray(4), 4, 2000)
 
-        onProgress("6. קריאת status (2 בייטים)...")
-        val payloadStatus = ByteArray(2)
-        val statusRead = c.bulkTransfer(iEp, payloadStatus, 2, 2000)
-        val statusVal = if (statusRead == 2) ByteBuffer.wrap(payloadStatus).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF else -1
-        onProgress("  status = 0x${String.format(Locale.US, "%04X", statusVal)}")
+        onProgress("6. קריאת status (4 בייטים)...")
+        val payloadStatus = ByteArray(4)
+        val statusRead = c.bulkTransfer(iEp, payloadStatus, 4, 2000)
+        val statusVal = if (statusRead == 4) ByteBuffer.wrap(payloadStatus).order(ByteOrder.BIG_ENDIAN).int else -1
+        onProgress("  status = 0x${String.format(Locale.US, "%08X", statusVal)}")
         if (statusVal != 0) {
             c.close(); return "status=$statusVal (expected 0)"
         }
@@ -165,7 +151,6 @@ object MtkBromConnection {
     }
 
     fun runDa1Phase(usbManager: UsbManager, device: UsbDevice, daBytes: ByteArray, onProgress: (String) -> Unit): String {
-        // ... (אותו קוד כמו קודם, אין שינוי כאן)
         var c: UsbDeviceConnection? = null
         for (attempt in 1..30) {
             c = usbManager.openDevice(device)
