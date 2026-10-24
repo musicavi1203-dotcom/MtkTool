@@ -36,23 +36,19 @@ class MainActivity : AppCompatActivity() {
     private var waitingForReconnect = false
     private var currentPhase = "kamakiri"
 
-    // --- תוספת שמירת הלוג ---
     private val logFile: File by lazy { File(filesDir, "mtk_tool.log") }
 
     private fun addLog(message: String) {
-        // שמירה לקובץ כדי שלא יימחק ברקע
         try {
             logFile.appendText("$message\n")
         } catch (e: Exception) {}
 
-        // עדכון המסך
         runOnUiThread {
             tvLog.append("$message\n")
             val sv = tvLog.parent as android.view.View
             sv.post { sv.scrollTo(0, sv.bottom) }
         }
     }
-    // -------------------------
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -105,7 +101,6 @@ class MainActivity : AppCompatActivity() {
         btnHandshake = findViewById(R.id.btnHandshake)
         btnHandshake.isEnabled = false
 
-        // מחיקת הלוג הישן בכל פתיחה של האפליקציה
         if (logFile.exists()) logFile.delete()
 
         tvStatus.text = "טוען קבצים..."
@@ -115,6 +110,11 @@ class MainActivity : AppCompatActivity() {
                 assets.open("mt6761_payload.bin").use { payloadBytes = it.readBytes() }
                 addLog("נטען Payload: ${payloadBytes?.size} בייט.")
                 
+                // --- הדפסת רשימת כל הקבצים ב-assets (כדי לראות מה באמת יש שם) ---
+                addLog("=== קבצים ב-assets ===")
+                assets.list("")?.forEach { addLog("  assets/$it") }
+                addLog("=====================")
+
                 loadNextDaFile() 
                 
                 runOnUiThread { tvStatus.text = "מוכן. חבר את המכשיר (כבוי)."; btnHandshake.isEnabled = true }
@@ -155,6 +155,9 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             addLog("!! שגיאה בטעינת $fileName: ${e.message}")
             daBytes = null
+            // --- אם הקובץ לא נטען, מדלגים אוטומטית לקובץ הבא ---
+            currentDaIndex++
+            loadNextDaFile()
         }
     }
 
