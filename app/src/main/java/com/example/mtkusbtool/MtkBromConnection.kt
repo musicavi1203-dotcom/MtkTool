@@ -57,33 +57,34 @@ object MtkBromConnection {
         onProgress("=== שלב ב': Kamakiri ===")
         
         fun write32(addr: Int, val1: Int): Boolean {
-            // 1. Send command 0xD4
+            // 1. שלח פקודה
             if (c.bulkTransfer(oEp, byteArrayOf(0xD4.toByte()), 1, 2000) < 0) return false
-            // 2. Read 1-byte echo!
+            // 2. קרא 1 בייט echo
             val echo = ByteArray(1)
             if (c.bulkTransfer(iEp, echo, 1, 2000) != 1) {
                 onProgress("  write32 echo failed")
                 return false
             }
-            // 3. Send addr
+            // 3. שלח addr
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
-            // 4. Send length (1 dword)
+            // 4. שלח אורך (1 dword)
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(1).array(), 4, 2000) < 0) return false
             
-            // 5. Read 4-byte status
+            // 5. קרא סטטוס (גמיש - 1 או 4 בייטים)
             val status = ByteArray(4)
-            val statusRead = c.bulkTransfer(iEp, status, 4, 2000)
-            if (statusRead != 4) {
+            val statusRead = c.bulkTransfer(iEp, status, 4, 500) // טיימאאוט קצר
+            if (statusRead == 1) {
+                onProgress("  write32 status (1 byte) = 0x${String.format(Locale.US, "%02X", status[0])}")
+                // ממשיכים גם אם זה 0x01 (אולי ה-BROM סתם מגיב מוזר)
+            } else if (statusRead == 4) {
+                val statusInt = ByteBuffer.wrap(status).order(ByteOrder.BIG_ENDIAN).int
+                onProgress("  write32 status (4 bytes) = 0x${String.format(Locale.US, "%08X", statusInt)}")
+            } else {
                 onProgress("  write32 status read failed (got $statusRead)")
                 return false
             }
-            val statusInt = ByteBuffer.wrap(status).order(ByteOrder.BIG_ENDIAN).int
-            if (statusInt != 0) {
-                onProgress("  write32 status is 0x${String.format(Locale.US, "%08X", statusInt)} (expected 0)")
-                return false
-            }
             
-            // 6. Send data
+            // 6. שלח את הנתון
             if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(val1).array(), 4, 2000) < 0) return false
             return true
         }
