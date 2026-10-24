@@ -11,20 +11,73 @@ import java.util.Locale
 
 object MtkBromConnection {
 
+    private const val TIMEOUT = 2000
+
+    private fun readExact(c: UsbDeviceConnection, ep: UsbEndpoint, size: Int, timeout: Int): ByteArray? {
+        val buf = ByteArray(size)
+        var offset = 0
+        while (offset < size) {
+            val read = c.bulkTransfer(ep, buf, offset, size - offset, timeout)
+            if (read <= 0) return null
+            offset += read
+        }
+        return buf
+    }
+
+    private fun echo(c: UsbDeviceConnection, inEp: UsbEndpoint, outEp: UsbEndpoint, data: ByteArray, timeout: Int): Boolean {
+        if (c.bulkTransfer(outEp, data, data.size, timeout) < 0) return false
+        val echo = readExact(c, inEp, data.size, timeout) ?: return false
+        return echo.contentEquals(data)
+    }
+
+    private fun echoByte(c: UsbDeviceConnection, inEp: UsbEndpoint, outEp: UsbEndpoint, value: Byte, timeout: Int): Boolean {
+        return echo(c, inEp, outEp, byteArrayOf(value), timeout)
+    }
+
+    private fun checkStatus(c: UsbDeviceConnection, inEp: UsbEndpoint, expected: Int, timeout: Int): Boolean {
+        val status = readExact(c, inEp, 2, timeout) ?: return false
+        val value = ByteBuffer.wrap(status).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+        return value == expected
+    }
+
+    private fun checkStatusLe(c: UsbDeviceConnection, inEp: UsbEndpoint, timeout: Int): Boolean {
+        val status = readExact(c, inEp, 2, timeout) ?: return false
+        val value = ByteBuffer.wrap(status).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+        return value <= 0xFF
+    }
+
+    private fun write32(c: UsbDeviceConnection, inEp: UsbEndpoint, outEp: UsbEndpoint, addr: Int, value: Int, timeout: Int): Boolean {
+        if (!echoByte(c, inEp, outEp, 0xD4.toByte(), timeout)) return false
+        if (!echo(c, inEp, outEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), timeout)) return false
+        if (!echo(c, inEp, outEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(1).array(), timeout)) return false
+        if (!checkStatus(c, inEp, 1, timeout)) return false // arg check
+        if (!echo(c, inEp, outEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(value).array(), timeout)) return false
+        if (!checkStatus(c, inEp, 1, timeout)) return false // final status
+        return true
+    }
+
+    private fun read32(c: UsbDeviceConnection, inEp: UsbEndpoint, outEp: UsbEndpoint, addr: Int, size: Int, timeout: Int): Boolean {
+        if (!echoByte(c, inEp, outEp, 0xD1.toByte(), timeout)) return false
+        if (!echo(c, inEp, outEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), timeout)) return false
+        if (!echo(c, inEp, outEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(size).array(), timeout)) return false
+        if (!checkStatusLe(c, inEp, timeout)) return false
+        for (i in 0 until size) {
+            if (readExact(c, inEp, 4, timeout) == null) return false
+        }
+        return checkStatusLe(c, inEp, timeout)
+    }
+
     private fun doHandshake(c: UsbDeviceConnection, inEp: UsbEndpoint, outEp: UsbEndpoint, onProgress: (String) -> Unit): Boolean {
-        val resp = ByteArray(1)
-        onProgress("Handshake שלב 1: A0...")
-        c.bulkTransfer(outEp, byteArrayOf(0xA0.toByte()), 1, 1000)
-        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0x5F.toByte()) { onProgress("נכשל ב-A0"); return false }
-        onProgress("Handshake שלב 2: 0A...")
-        c.bulkTransfer(outEp, byteArrayOf(0x0A.toByte()), 1, 1000)
-        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0xF5.toByte()) { onProgress("נכשל ב-0A"); return false }
-        onProgress("Handshake שלב 3: 50...")
-        c.bulkTransfer(outEp, byteArrayOf(0x50.toByte()), 1, 1000)
-        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0xAF.toByte()) { onProgress("נכשל ב-50"); return false }
-        onProgress("Handshake שלב 4: 05...")
-        c.bulkTransfer(outEp, byteArrayOf(0x05.toByte()), 1, 1000)
-        if (c.bulkTransfer(inEp, resp, 1, 1000) != 1 || resp[0] != 0xFA.toByte()) { onProgress("נכשל ב-05"); return false }
+        val sequence = byteArrayOf(0xA0.toByte(), 0x0A.toByte(), 0x50.toByte(), 0x05.toByte())
+        for (i in sequence.indices) {
+            if (c.bulkTransfer(outEp, byteArrayOf(sequence[i]), 1, TIMEOUT) < 0) return false
+            val reply = readExact(c, inEp, 1, TIMEOUT) ?: return false
+            val expected = (sequence[i].toInt().inv() and 0xFF).toByte()
+            if (reply[0] != expected) {
+                onProgress("Handshake failed at step $i (expected 0x${String.format(Locale.US, "%02X", expected)}, got 0x${String.format(Locale.US, "%02X", reply[0])})")
+                return false
+            }
+        }
         onProgress("BROM handshake מלא OK!")
         return true
     }
@@ -52,97 +105,51 @@ object MtkBromConnection {
         if (!doHandshake(c, iEp, oEp, onProgress)) { c.close(); return "Handshake נכשל." }
 
         onProgress("=== שלב ב': Kamakiri ===")
-        
-        fun write32(addr: Int, val1: Int): Boolean {
-            if (c.bulkTransfer(oEp, byteArrayOf(0xD4.toByte()), 1, 2000) < 0) return false
-            
-            val echo = ByteArray(1)
-            if (c.bulkTransfer(iEp, echo, 1, 2000) == 1) {
-                onProgress("  write32 echo = 0x${String.format(Locale.US, "%02X", echo[0])}")
-            }
-            
-            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
-            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(1).array(), 4, 2000) < 0) return false
-            
-            // --- תיקון: קריאת 4 בייטים של סטטוס (לא 2) ---
-            val status = ByteArray(4)
-            val statusRead = c.bulkTransfer(iEp, status, 4, 2000)
-            if (statusRead != 4) {
-                onProgress("  write32 status read failed (got $statusRead)")
-                return false
-            }
-            // ה-BROM שולח BE, לא LE
-            val statusInt = ByteBuffer.wrap(status).order(ByteOrder.BIG_ENDIAN).int
-            onProgress("  write32 status = 0x${String.format(Locale.US, "%08X", statusInt)}")
-            if (statusInt != 0) {
-                onProgress("  write32 failed with status 0x${String.format(Locale.US, "%08X", statusInt)}")
-                return false
-            }
-            
-            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(val1).array(), 4, 2000) < 0) return false
-            return true
-        }
-
-        fun read32(addr: Int, dwords: Int): Boolean {
-            if (c.bulkTransfer(oEp, byteArrayOf(0xD1.toByte()), 1, 2000) < 0) return false
-            val echo = ByteArray(1)
-            c.bulkTransfer(iEp, echo, 1, 2000) // קריאת echo
-            
-            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(addr).array(), 4, 2000) < 0) return false
-            if (c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(dwords).array(), 4, 2000) < 0) return false
-            
-            val status = ByteArray(4)
-            c.bulkTransfer(iEp, status, 4, 2000)
-            val data = ByteArray(dwords * 4)
-            c.bulkTransfer(iEp, data, data.size, 2000)
-            return true
-        }
 
         val wdtAddr = 0x10007000
         val scratchAddr = wdtAddr + 0x50
         val payloadAddr = 0x100A00
 
         onProgress("1. השבתת Watchdog (0x10007000)...")
-        if (!write32(wdtAddr, 0x22000064)) { c.close(); return "השבתת Watchdog נכשלה." }
+        if (!write32(c, iEp, oEp, wdtAddr, 0x22000064, TIMEOUT)) {
+            c.close(); return "השבתת Watchdog נכשלה."
+        }
 
         onProgress("2. כתיבת כתובת Payload ל-Scratch (0x10007050)...")
-        if (!write32(scratchAddr, payloadAddr)) { c.close(); return "כתיבת Scratch נכשלה." }
+        if (!write32(c, iEp, oEp, scratchAddr, payloadAddr, TIMEOUT)) {
+            c.close(); return "כתיבת Scratch נכשלה."
+        }
 
         onProgress("3. לולאת read32 (15 פעמים)...")
         for (i in 0 until 15) {
-            if (!read32(scratchAddr - (15 - i) * 4, 15 - i + 1)) {
+            if (!read32(c, iEp, oEp, scratchAddr - (15 - i) * 4, 15 - i + 1, TIMEOUT)) {
                 onProgress("  read32 failed at iteration $i")
             }
         }
 
         onProgress("4. שליחת 0xE0...")
-        c.bulkTransfer(oEp, byteArrayOf(0xE0.toByte()), 1, 2000)
-        c.bulkTransfer(iEp, ByteArray(1), 1, 2000)
+        if (!echoByte(c, iEp, oEp, 0xE0.toByte(), TIMEOUT)) {
+            c.close(); return "שליחת 0xE0 נכשלה."
+        }
 
-        onProgress("5. שליחת אורך (0xA00)...")
-        c.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(0xA00).array(), 4, 2000)
-        c.bulkTransfer(iEp, ByteArray(4), 4, 2000)
+        onProgress("5. שליחת אורך (${payloadBytes.size})...")
+        if (!echo(c, iEp, oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(payloadBytes.size).array(), TIMEOUT)) {
+            c.close(); return "שליחת אורך נכשלה."
+        }
 
-        onProgress("6. קריאת status (4 בייטים)...")
-        val payloadStatus = ByteArray(4)
-        val statusRead = c.bulkTransfer(iEp, payloadStatus, 4, 2000)
-        val statusVal = if (statusRead == 4) ByteBuffer.wrap(payloadStatus).order(ByteOrder.BIG_ENDIAN).int else -1
-        onProgress("  status = 0x${String.format(Locale.US, "%08X", statusVal)}")
-        if (statusVal != 0) {
-            c.close(); return "status=$statusVal (expected 0)"
+        onProgress("6. קריאת status (2 בייטים)...")
+        if (!checkStatus(c, iEp, 0, TIMEOUT)) {
+            c.close(); return "status אחרי אורך לא תקין."
         }
 
         onProgress("7. שליחת Payload (${payloadBytes.size} בייט)...")
-        if (c.bulkTransfer(oEp, payloadBytes, payloadBytes.size, 5000) < 0) {
+        if (c.bulkTransfer(oEp, payloadBytes, payloadBytes.size, TIMEOUT) < 0) {
             c.close(); return "שליחת Payload נכשלה."
         }
 
-        onProgress("8. ניקוי 4 בייטים...")
-        c.bulkTransfer(iEp, ByteArray(4), 4, 1000)
-
-        onProgress("9. הפעלת ה-Trigger (var_1=0x7F)...")
+        onProgress("8. הפעלת ה-Trigger...")
         try {
-            c.controlTransfer(0xA1, 0, 0, 0x7F, null, 0, 5000)
+            c.controlTransfer(0xA1, 0, 0, 0x7F, null, 0, TIMEOUT)
         } catch (e: Exception) {}
 
         c.close()
@@ -158,7 +165,7 @@ object MtkBromConnection {
             Thread.sleep(50)
         }
         val connection = c ?: return "שגיאה: לא הצלחנו לפתוח חיבור."
-        
+
         var inEp: UsbEndpoint? = null
         var outEp: UsbEndpoint? = null
         for (i in 0 until device.interfaceCount) {
@@ -180,26 +187,26 @@ object MtkBromConnection {
         if (!doHandshake(connection, iEp, oEp, onProgress)) { connection.close(); return "Handshake מחדש נכשל." }
 
         onProgress("=== שלב ד': שליחת DA1 ===")
-        
+
         val da1Addr = 0x200000L
         val sigLen = 256
         onProgress("DA1: ${daBytes.size} בייט, addr=0x${java.lang.Long.toHexString(da1Addr)}, sigLen=$sigLen")
-        
+
         val headerBuf = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
         headerBuf.put(0xD7.toByte())
         headerBuf.putInt(da1Addr.toInt())
         headerBuf.putInt(daBytes.size)
         headerBuf.putInt(0x1000)
-        
-        if (connection.bulkTransfer(oEp, headerBuf.array(), 13, 2000) < 0) {
+
+        if (connection.bulkTransfer(oEp, headerBuf.array(), 13, TIMEOUT) < 0) {
             connection.close(); return "שגיאה: שליחת Header נכשלה."
         }
-        
-        val headerAck = ByteArray(1)
-        if (connection.bulkTransfer(iEp, headerAck, 1, 2000) != 1) {
+
+        val headerAck = readExact(connection, iEp, 1, TIMEOUT)
+        if (headerAck == null) {
             connection.close(); return "שגיאה: לא התקבלה תגובה ל-Header."
         }
-        
+
         val ackHex = String.format(Locale.US, "0x%02X", headerAck[0])
         if (headerAck[0] == 0xD8.toByte()) {
             connection.close()
@@ -207,29 +214,28 @@ object MtkBromConnection {
         } else if (headerAck[0] != 0x5A.toByte()) {
             connection.close(); return "שגיאה: Header לא אושר (קיבלנו $ackHex, צפינו ל-0x5A)."
         }
-        
+
         onProgress("SEND_DA אושר! (0x5A) מתחיל להעביר נתונים...")
 
         var offset = 0
         val chunkSize = 0x1000
         var lastProgress = -10
-        
+
         while (offset < daBytes.size) {
             val len = minOf(chunkSize, daBytes.size - offset)
             val chunk = daBytes.copyOfRange(offset, offset + len)
-            
-            if (connection.bulkTransfer(oEp, chunk, len, 5000) < 0) {
+
+            if (connection.bulkTransfer(oEp, chunk, len, TIMEOUT) < 0) {
                 connection.close(); return "שגיאה: שליחת נתונים נכשלה ב-$offset."
             }
-            
-            val ackBuf = ByteArray(1)
-            val ackRead = connection.bulkTransfer(iEp, ackBuf, 1, 5000)
-            if (ackRead != 1 || ackBuf[0] != 0x5A.toByte()) {
-                val actualAck = if (ackRead == 1) String.format(Locale.US, "0x%02X", ackBuf[0]) else "אין"
+
+            val ackBuf = readExact(connection, iEp, 1, TIMEOUT)
+            if (ackBuf == null || ackBuf[0] != 0x5A.toByte()) {
+                val actualAck = if (ackBuf != null) String.format(Locale.US, "0x%02X", ackBuf[0]) else "אין"
                 connection.close()
                 return "שגיאה: ACK לא תקין ב-$offset (קיבלנו $actualAck, צפינו ל-0x5A)."
             }
-            
+
             offset += len
             val progress = (offset * 100) / daBytes.size
             if (progress >= lastProgress + 10) {
@@ -240,29 +246,29 @@ object MtkBromConnection {
         onProgress("כל הנתונים נשלחו בהצלחה! ממתין ל-ACK סופי...")
 
         Thread.sleep(500)
-        
-        if (connection.bulkTransfer(oEp, byteArrayOf(0x5A.toByte()), 1, 2000) < 0) {
+
+        if (connection.bulkTransfer(oEp, byteArrayOf(0x5A.toByte()), 1, TIMEOUT) < 0) {
             connection.close(); return "שגיאה: שליחת ACK סופי נכשלה."
         }
-        
-        val finalAckBuf = ByteArray(1)
-        if (connection.bulkTransfer(iEp, finalAckBuf, 1, 5000) != 1) {
+
+        val finalAck = readExact(connection, iEp, 1, TIMEOUT)
+        if (finalAck == null) {
             connection.close(); return "שגיאה: לא התקבל ACK סופי."
         }
-        onProgress("ACK סופי התקבל: 0x${String.format(Locale.US, "%02X", finalAckBuf[0])}")
+        onProgress("ACK סופי התקבל: 0x${String.format(Locale.US, "%02X", finalAck[0])}")
 
         onProgress("=== שלב ה': קפיצה ל-DA1 ===")
-        if (connection.bulkTransfer(oEp, byteArrayOf(0xD5.toByte()), 1, 2000) < 0) {
+        if (connection.bulkTransfer(oEp, byteArrayOf(0xD5.toByte()), 1, TIMEOUT) < 0) {
             connection.close(); return "שגיאה: שליחת JUMP_DA נכשלה."
         }
-        connection.bulkTransfer(iEp, ByteArray(1), 1, 2000)
-        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(da1Addr.toInt()).array(), 4, 2000)
-        connection.bulkTransfer(iEp, ByteArray(4), 4, 2000)
-        
-        val syncBuf = ByteArray(1)
-        connection.bulkTransfer(iEp, syncBuf, 1, 5000)
-        if (syncBuf[0] != 0xC0.toByte()) {
-            connection.close(); return "sync=0x${String.format(Locale.US, "%02X", syncBuf[0])}"
+        readExact(connection, iEp, 1, TIMEOUT)
+        connection.bulkTransfer(oEp, ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(da1Addr.toInt()).array(), 4, TIMEOUT)
+        readExact(connection, iEp, 4, TIMEOUT)
+
+        val sync = readExact(connection, iEp, 1, 5000)
+        if (sync == null || sync[0] != 0xC0.toByte()) {
+            val valStr = if (sync != null) String.format(Locale.US, "0x%02X", sync[0]) else "timeout"
+            connection.close(); return "sync=$valStr"
         }
         onProgress("DA1 רץ! (0xC0 התקבל)")
 
